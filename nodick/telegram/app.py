@@ -1114,6 +1114,7 @@ def run() -> None:
     print(f"   Bot: @{settings.bot_token.split(':')[0]}")
     print(f"   Admin: {settings.admin_id}")
     print(f"   DB: {settings.db_path}")
+    print(f"   Database URL: {'✅ Set (PostgreSQL)' if settings.database_url else '❌ Not set (using SQLite)'}")
     print(f"   StashDB: {'✅' if settings.stash_configured else '❌ no API key'}")
     print(f"   FansDB: {'✅' if settings.fansdb_configured else '❌ no API key'}")
     print(f"   Threshold: {get_match_threshold():.0%}")
