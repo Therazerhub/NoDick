@@ -1,8 +1,5 @@
 # NoDick — Git ignore
 
-# Environment
-.env
-
 # Deploy key
 .github_deploy_key
 .github_deploy_key.pub
@@ -15,12 +12,12 @@ runtime/
 *.db-shm
 
 # Python
+.venv/
+venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
-.venv/
-venv/
 
 # Telethon session files
 *.session
