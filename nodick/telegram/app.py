@@ -1013,7 +1013,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cb_data = None
     if update and update.callback_query:
         cb_data = update.callback_query.data
-    log.error("⚠️ Error: %s | update_id=%s callback=%s", err, update_id, cb_data)
+    log.error("⚠️ Error: %s | type=%s | repr=%s | update_id=%s callback=%s",
+              err, type(err).__name__, repr(err), update_id, cb_data)
 
 
 # ── No-op callback (for non-interactive info buttons) ──────────────────────
