@@ -1,9 +1,10 @@
 services:
-  - type: worker
+  - type: web
     name: nodick-bot
     env: docker
     region: oregon
     plan: free
+    healthCheckPath: /
     dockerfilePath: ./Dockerfile
     envVars:
       - key: BOT_TOKEN

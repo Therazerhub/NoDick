@@ -1051,12 +1051,34 @@ def run() -> None:
         raise SystemExit("BOT_TOKEN missing. Copy .env.example to .env and fill it.")
 
     import sys as _sys
+    import os as _os
+    import threading as _threading
+    from http.server import HTTPServer, BaseHTTPRequestHandler
 
     if _sys.version_info >= (3, 10):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             asyncio.set_event_loop(asyncio.new_event_loop())
+
+    # Start a minimal health-check web server so Render knows we're alive
+    # and doesn't spin down the free tier service
+    class _HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"NoDick is alive")
+            self.wfile.flush()
+
+        def log_message(self, format, *args):
+            pass  # suppress request logs
+
+    _port = int(_os.getenv("PORT", "8080"))
+    _server = HTTPServer(("0.0.0.0", _port), _HealthHandler)
+    _t = _threading.Thread(target=_server.serve_forever, daemon=True)
+    _t.start()
+    log.info("Health server on port %d", _port)
 
     print("🖤 NoDick starting...")
     print(f"   Bot: @{settings.bot_token.split(':')[0]}")
@@ -1065,6 +1087,7 @@ def run() -> None:
     print(f"   StashDB: {'✅' if settings.stash_configured else '❌ no API key'}")
     print(f"   FansDB: {'✅' if settings.fansdb_configured else '❌ no API key'}")
     print(f"   Threshold: {get_match_threshold():.0%}")
+    print(f"   Health: http://0.0.0.0:{_port}/")
     print("   Listening...")
 
     build_application().run_polling()
