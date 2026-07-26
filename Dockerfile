@@ -19,4 +19,4 @@ RUN mkdir -p /data
 EXPOSE 8080
 
 # Start bot
-CMD ["sh", "-c", "python -m nodick run"]
+CMD ["sh", "-c", "PYTHONUNBUFFERED=1 python -m nodick run"]
