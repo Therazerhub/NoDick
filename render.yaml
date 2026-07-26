@@ -24,7 +24,7 @@ services:
       # PostgreSQL connection string — set this for persistent storage on Render.
       # Get the Internal Database URL from your Render PostgreSQL dashboard.
       - key: DATABASE_URL
-        value: postgresql://user:password@host:5432/nodick
+        value: postgresql://nodick_user:BFPUUHl5tgqapcdv79dWMFZnNGLd6yy2@dpg-d9j6bj3eo5us73au3et0-a/nodick
     disk:
       name: nodick-data
       mountPath: /data
