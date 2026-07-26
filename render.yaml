@@ -1,0 +1,26 @@
+services:
+  - type: worker
+    name: nodick-bot
+    env: docker
+    region: oregon
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: BOT_TOKEN
+        value: 8206593405:AAHC77fwS8mpr1oBDOLMfLjVipzRtOYb8gg
+      - key: ADMIN_ID
+        value: "6001922744"
+      - key: TELEGRAM_API_ID
+        value: "20227614"
+      - key: TELEGRAM_API_HASH
+        value: b9268f7d01884a3d740ba17d0ad8754b
+      - key: DB_PATH
+        value: /data/nodick.db
+      - key: TELEGRAM_USER_SESSION
+        value: /data/nodick_user
+      - key: STASHDB_API_KEY
+        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiJlZWY1MDg1My03ZjRhLTQ2MzQtOGQ0NC1lMzY0MTVhZTgyMWIiLCJzdWIiOiJBUElLZXkiLCJpYXQiOjE3NzA4MzIxODB9.oq6JhgsfLDHILoNeix5Tulky9Sc05TCPdMs-FUZR7CA
+    disk:
+      name: nodick-data
+      mountPath: /data
+      sizeGB: 1
