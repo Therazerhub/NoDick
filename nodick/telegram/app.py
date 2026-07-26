@@ -350,18 +350,27 @@ async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cats = get_categories()
     if not cats:
         text = "📁 No categories yet."
+        markup = back()
     else:
-        lines = ["📁 *Categories*", ""]
-        for cat in cats:
-            lines.append(f"`{cat['category']}` — {cat['count']} videos")
-        text = "\n".join(lines)
+        buttons = [
+            InlineKeyboardButton(
+                f"{cat['category']} ({cat['count']})",
+                callback_data=f"cat_{cat['category']}",
+            )
+            for cat in cats
+        ]
+        # 2 per row
+        rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+        rows.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
+        markup = InlineKeyboardMarkup(rows)
+        text = f"📁 *Categories* — {len(cats)} total"
 
     if update.callback_query:
         await update.callback_query.edit_message_text(
-            text, reply_markup=back(), parse_mode="Markdown"
+            text, reply_markup=markup, parse_mode="Markdown"
         )
     else:
-        await update.message.reply_text(text, reply_markup=back())
+        await update.message.reply_text(text, reply_markup=markup)
 
 
 async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
