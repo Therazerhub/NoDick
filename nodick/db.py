@@ -31,6 +31,11 @@ if _using_pg:
             _pg_conn.autocommit = True
         return _pg_conn
 
+    @contextmanager
+    def connect():
+        """Context manager yielding the global PG connection (compat with SQLite API)."""
+        yield _get_pg()
+
     def _fetchall(sql, params=None):
         conn = _get_pg()
         with conn.cursor(cursor_factory=RealDictCursor) as cur:

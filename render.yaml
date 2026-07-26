@@ -24,7 +24,9 @@ services:
       # PostgreSQL connection string — set this for persistent storage on Render.
       # Get the Internal Database URL from your Render PostgreSQL dashboard.
       - key: DATABASE_URL
-        value: postgresql://nodick_user:BFPUUHl5tgqapcdv79dWMFZnNGLd6yy2@dpg-d9j6bj3eo5us73au3et0-a.oregon-postgres.render.com/nodick
+        # Internal URL — Render auto-resolves this within its network.
+        # Do NOT use the external (.oregon-postgres.render.com) URL here.
+        value: postgresql://nodick_user:BFPUUHl5tgqapcdv79dWMFZnNGLd6yy2@dpg-d9j6bj3eo5us73au3et0-a/nodick
     disk:
       name: nodick-data
       mountPath: /data

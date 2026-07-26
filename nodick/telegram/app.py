@@ -978,8 +978,10 @@ async def _handle_correction_text(
 
     # Update the main title too
     if title:
+        from nodick.db import _using_pg as _db_pg
+        ph = "%s" if _db_pg else "?"
         with connect() as conn:
-            conn.execute("UPDATE videos SET title = ? WHERE id = ?", (text, video_id))
+            conn.execute(f"UPDATE videos SET title = {ph} WHERE id = {ph}", (text, video_id))
 
     await update.message.reply_text("✅ Corrected! 💕", reply_markup=main_menu(update.effective_user.id))
 
