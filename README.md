@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="https://media.giphy.com/media/v1.Y2lkPWVjZjA1ZTQ3Y24yMzFmdWQ1Znd5MWFxdG5xNmd2ZDl5Z3EwaDN4YjYxcnJmc2txYyZlcD12MV9naWZzX3NlYXJjaCZjdD1n/yUWQzy6sddhogLdJSR/giphy.gif" width="300"/>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/NoDick-v1.0-black?style=for-the-badge&logo=python"/>
   <img src="https://img.shields.io/badge/Telegram-Bot-2CA5E0?style=for-the-badge&logo=telegram"/>
   <img src="https://img.shields.io/badge/StashDB-Enabled-8A2BE2?style=for-the-badge"/>
