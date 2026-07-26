@@ -4,4 +4,5 @@ telethon>=1.35.0
 requests>=2.31.0
 rapidfuzz>=3.0.0
 jellyfish>=0.11.0
+psycopg2-binary>=2.9.0
 pytest>=8.0.0

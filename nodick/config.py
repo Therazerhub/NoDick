@@ -44,6 +44,7 @@ class Settings:
 
     # Database
     db_path: str = os.getenv("DB_PATH", str(ROOT / "runtime" / "nodick.db"))
+    database_url: str = os.getenv("DATABASE_URL", "").strip()
 
     # Metadata APIs
     stashdb_api_key: str = os.getenv("STASHDB_API_KEY", "").strip()

@@ -20,7 +20,11 @@ services:
       - key: TELEGRAM_USER_SESSION
         value: /data/nodick_user
       - key: STASHDB_API_KEY
-        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiJlZWY1MDg1My03ZjRhLTQ2MzQtOGQ0NC1lMzY0MTVhZTgyMWIiLCJzdWIiOiJBUElLZXkiLCJpYXQiOjE3NzA4MzIxODB9.oq6JhgsfLDHILoNeix5Tulky9Sc05TCPdMs-FUZR7CA
+        value: eyJhbG...R7CA
+      # PostgreSQL connection string — set this for persistent storage on Render.
+      # Get the Internal Database URL from your Render PostgreSQL dashboard.
+      - key: DATABASE_URL
+        value: postgresql://user:password@host:5432/nodick
     disk:
       name: nodick-data
       mountPath: /data
