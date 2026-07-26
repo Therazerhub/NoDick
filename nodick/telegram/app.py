@@ -28,6 +28,7 @@ from nodick.db import (
     connect,
     create_import_job,
     ensure_user_exists,
+    find_sibling_parts,
     get_bot_setting,
     get_categories,
     get_favorites,
@@ -50,6 +51,7 @@ from nodick.telegram.keyboards import (
     back,
     import_menu as import_keyboard,
     main_menu,
+    part_nav_row,
     settings_keyboard,
     video_actions,
 )
@@ -184,6 +186,14 @@ async def _enrich_and_send(
         show_rename=show_rename,
         feedback_enabled=_stash_available,
     )
+
+    # Multi-part navigation — if this video has siblings, add prev/next buttons
+    siblings = find_sibling_parts(video_id, filename)
+    nav = part_nav_row(siblings, video_id)
+    if nav:
+        buttons = list(markup.inline_keyboard)
+        buttons.insert(0, nav)
+        markup = InlineKeyboardMarkup(buttons)
 
     await _send_video_ref(
         context.bot, chat_id, row["file_id"], caption_text, markup
@@ -989,6 +999,14 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.error("Update %s caused error %s", update, context.error)
 
 
+# ── No-op callback (for non-interactive info buttons) ──────────────────────
+
+
+async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Silently acknowledge non-interactive buttons (e.g., part counter)."""
+    await update.callback_query.answer()
+
+
 # ── Application builder ────────────────────────────────────────────────────
 
 
@@ -1031,6 +1049,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_rename_callback, pattern="^rename_"))
     app.add_handler(CallbackQueryHandler(handle_correct_callback, pattern="^correct_"))
     app.add_handler(CallbackQueryHandler(scanimport_callback, pattern="^scanimport_"))
+    app.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
 
     # ── Message handlers ──
     # Forwarded-from-channel detection must come BEFORE video handler

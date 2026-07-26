@@ -99,6 +99,23 @@ def extract_category_from_title(title: str) -> Optional[str]:
     return None
 
 
+def parse_part_info(title: str) -> tuple[Optional[str], Optional[int]]:
+    """Extract base name and part number from a multi-part video title.
+
+    Handles both formats:
+      'DEEPER 101330 1080P part002'     → ('DEEPER 101330 1080P', 2)
+      '1080p.part001'                   → ('1080p', 1)
+
+    Returns (base_name, part_number) or (None, None).
+    """
+    if not title:
+        return None, None
+    match = re.search(r'^(.*?)[\s.]part(\d+)$', title, re.I)
+    if match:
+        return match.group(1).strip(), int(match.group(2))
+    return None, None
+
+
 def format_duration(seconds: Optional[int]) -> str:
     """Format seconds to m:ss"""
     if not seconds:

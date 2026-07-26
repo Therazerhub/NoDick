@@ -96,3 +96,30 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
         ]
     )
+
+
+def part_nav_row(siblings: list[dict], video_id: int) -> list[InlineKeyboardButton] | None:
+    """Build prev/next navigation row for multi-part videos.
+
+    ``siblings`` is the list from ``find_sibling_parts()``, each with
+    ``{id, part, total}``. Returns a list of buttons or None if a single part.
+    """
+    if not siblings or len(siblings) < 2:
+        return None
+
+    current = next((s for s in siblings if s["id"] == video_id), None)
+    if not current:
+        return None
+
+    row = []
+    if current["part"] > 1:
+        prev_video = siblings[current["part"] - 2]
+        row.append(InlineKeyboardButton("◀️", callback_data=f"play_{prev_video['id']}"))
+
+    row.append(InlineKeyboardButton(f"📦 {current['part']}/{current['total']}", callback_data="noop"))
+
+    if current["part"] < current["total"]:
+        next_video = siblings[current["part"]]
+        row.append(InlineKeyboardButton("▶️", callback_data=f"play_{next_video['id']}"))
+
+    return row

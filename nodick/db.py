@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from .config import settings
+from .utils import parse_part_info
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
@@ -380,3 +381,51 @@ def latest_import_job() -> Optional[dict]:
         return conn.execute(
             "SELECT * FROM import_jobs ORDER BY id DESC LIMIT 1"
         ).fetchone()
+
+
+# ── Multi-part video helpers ─────────────────────────────────────────────
+
+
+def find_sibling_parts(video_id: int, title: str) -> list[dict]:
+    """Find multi-part siblings for a video.
+
+    Parses the title for a 'partXXX' suffix, then finds other videos with the
+    same base name. Returns sorted list of {id, part, total} or empty list.
+
+    Example: title 'SiaSiberia HotAsHerFuck 1080p part002' finds all
+    'SiaSiberia HotAsHerFuck 1080p partXXX' videos and returns them ordered.
+    """
+    base, _ = parse_part_info(title)
+    if not base:
+        return []
+
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, title FROM videos WHERE id != ? AND title LIKE ? ORDER BY title ASC",
+            (video_id, f"{base} part%"),
+        ).fetchall()
+
+    if not rows:
+        return []
+
+    # Build list with part numbers extracted from each sibling
+    siblings = []
+    for row in rows:
+        _, part = parse_part_info(row["title"])
+        if part:
+            siblings.append({"id": row["id"], "part": part})
+
+    if not siblings:
+        return []
+
+    # Add current video
+    _, current_part = parse_part_info(title)
+    siblings.append({"id": video_id, "part": current_part or 0})
+
+    # Sort by part number, then reassign sequential indices
+    siblings.sort(key=lambda x: x["part"])
+    total = len(siblings)
+    return [
+        {"id": s["id"], "part": i + 1, "total": total}
+        for i, s in enumerate(siblings)
+    ]
