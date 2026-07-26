@@ -1007,7 +1007,13 @@ async def handle_rename_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log.error("Update %s caused error %s", update, context.error)
+    """Log errors with the actual exception first, before the massive update dump."""
+    err = context.error
+    update_id = update.update_id if update else None
+    cb_data = None
+    if update and update.callback_query:
+        cb_data = update.callback_query.data
+    log.error("⚠️ Error: %s | update_id=%s callback=%s", err, update_id, cb_data)
 
 
 # ── No-op callback (for non-interactive info buttons) ──────────────────────
