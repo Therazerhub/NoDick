@@ -1,113 +1,126 @@
-# 🖤 NoDick
+<p align="center">
+  <img src="https://img.shields.io/badge/NoDick-v1.0-black?style=for-the-badge&logo=python"/>
+  <img src="https://img.shields.io/badge/Telegram-Bot-2CA5E0?style=for-the-badge&logo=telegram"/>
+  <img src="https://img.shields.io/badge/StashDB-Enabled-8A2BE2?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/License-MIT-red?style=for-the-badge"/>
+</p>
 
-Your fucking stash index. Cleaner than your browser history.
+<h1 align="center">🖤 NoDick</h1>
+<h3 align="center"><i>Your fucking stash index. Cleaner than your browser history.</i></h3>
 
-Telegram stash bot with StashDB enrichment, silent Telethon scanning, and a personality.
+<p align="center">
+  Telegram stash bot with <b>StashDB enrichment</b>, <b>silent Telethon scanning</b>, <br>
+  and more personality than your average bot.
+</p>
 
 ---
 
-## Features
+## 🎮 Commands
 
-- **🎲 /random** — surprise video with enriched caption
-- **🔍 /search** — find anything with pagination
-- **📁 /categories** — browse by studio/source
-- **⭐ /favorites** — save your keepers
-- **🎭 /performer** — StashDB performer lookup
-- **📏 /threshold 80** — set match confidence (80%+)
-- **🌐 StashDB enrichment** — auto-matches titles, performers, tags, studio
-- **📥 Silent import** — batch-scans via Telethon bot token, zero forwards
-- **📡 Auto-detect channel** — forward a video, tap Import from here
+| Command | Description |
+|---------|-------------|
+| `/start` | Main menu |
+| `/random` | 🎲 Surprise video with enriched caption |
+| `/search <q>` | 🔍 Search stash |
+| `/categories` | 📁 Browse by studio |
+| `/favorites` | ⭐ Your saved |
+| `/stats` | 📊 Collection stats |
+| `/performer <name>` | 🎭 StashDB performer lookup |
+| `/threshold <0-100>` | 📏 Match confidence |
+| `/settings` | ⚙️ Admin panel |
+| `/import <channel>` | 📥 Channel import |
+| `/import_scan <channel> <id>` | 📡 Silent scan (no forwards) |
+| `/import_status` | 📊 Import progress |
 
-## Quick Start
+## ✨ Features
 
+**📡 Silent Import** — Forward a video from your channel, tap "Import from here". No messages flash in your chat. Uses Telethon with just your bot token — batch-fetches 100 IDs at a time like VJ-FILTER-BOT.
+
+**🌐 StashDB Enrichment** — Auto-matches titles, performers, studio, and tags. Set confidence threshold with `/threshold 80` so only strong matches get through.
+
+**📏 Threshold System**
 ```
+/threshold 80   → only strong matches (≥80% confidence)
+/threshold 0    → show everything (default)
+/threshold 100  → perfectionist mode
+```
+
+**🎭 Performer Search** — Query StashDB's performer database directly from Telegram.
+
+**📥 Dual Import Modes**
+- `/import_scan` — Telethon bot-token mode, silent, no user session needed
+- `/import` — Full channel history import via Telethon user session (requires session-login)
+
+## 🚀 Quick Start
+
+```bash
 git clone https://github.com/Therazerhub/NoDick.git
 cd NoDick
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Fill in BOT_TOKEN, ADMIN_ID, API_ID, API_HASH
+# Fill in: BOT_TOKEN, ADMIN_ID, TELEGRAM_API_ID, TELEGRAM_API_HASH
 python -m nodick init-db
 python -m nodick run
 ```
 
-### Silent Import (no user session)
-
-Forward the last video from your channel to the bot → tap **Import from here**.
-
-Or use `/import_scan <channel_id> <start_id>`:
+### Import Without User Session
 ```
 /import_scan -1001234567890 10542
 ```
+Or forward the last video from your channel and tap 📥 Import from here.
 
-Uses Telethon with **just your bot token** — no user session, no forwarded messages flashing in your chat. Batch-fetches 100 IDs at a time like VJ-FILTER-BOT.
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `/start` | Main menu |
-| `/random` | Surprise video |
-| `/search <q>` | Search stash |
-| `/categories` | Browse by studio |
-| `/favorites` | Your saved |
-| `/stats` | Collection stats |
-| `/performer <name>` | StashDB performer search |
-| `/threshold <0-100>` | Match confidence filter |
-| `/settings` | Admin panel |
-| `/import <channel>` | Telethon channel import |
-| `/import_scan <channel> <id>` | Silent scan (no forwards) |
-| `/import_status` | Check import progress |
-
-## Threshold
-
-```
-/threshold 80   → only show matches with ≥80% confidence
-/threshold 0    → show everything (default)
-/threshold 100  → perfectionist mode
+### Import With Telethon Session
+```bash
+python -m nodick session-login  # one-time auth
+# Then use: /import -1001234567890
 ```
 
-At 80, only strong StashDB matches get the 🌐 treatment. Weak ones fall back to 📁 local parsing.
-
-## StashDB Setup
-
-1. Get your API key from [stashdb.org](https://stashdb.org)
-2. Set it in `.env`: `STASHDB_API_KEY=your_jwt_token_here`
-3. Restart bot
-
-Without a key, everything falls back to local filename parsing — still works, just less juicy.
-
-## Project Structure
+## 📁 Structure
 
 ```
 nodick/
-├── __main__.py              # CLI entry point
+├── __main__.py              # CLI: run, import, session-login
 ├── config.py                # Settings from .env
-├── db.py                    # Database schema + CRUD
-├── utils.py                 # Title cleaning, category extraction
+├── db.py                    # Schema + CRUD
+├── utils.py                 # Title cleaning, categories
 ├── telegram/
-│   ├── app.py               # All 35 handlers merged
-│   └── keyboards.py         # Inline keyboard layouts
+│   ├── app.py               # 35 handlers — all merged
+│   └── keyboards.py         # Inline keyboards
 ├── metadata/
 │   ├── stash.py             # StashDB/FansDB integration
 │   ├── matching.py          # Fuzzy + phonetic matching
-│   ├── rename.py            # Auto-rename logic
-│   └── performer_db.py      # Local performer DB
+│   ├── rename.py            # Auto-rename
+│   └── performer_db.py      # Local performer cache
 └── services/
     ├── importer.py          # Telethon channel import
-    ├── message_importer.py  # Silent Telethon batch scanner
-    └── session.py           # Session login CLI
+    ├── message_importer.py  # Silent batch scanner
+    └── session.py           # Session login
 ```
 
-## Tech
+## 🔧 Tech Stack
 
-- **python-telegram-bot v21** — Bot API framework
-- **Telethon** — MTProto client for silent history scanning
-- **RapidFuzz** — fuzzy string matching
-- **Jellyfish** — phonetic matching (soundex, metaphone)
-- **Requests** — GraphQL queries to StashDB/FansDB
+| Tool | Purpose |
+|------|---------|
+| **python-telegram-bot v21** | Bot API framework |
+| **Telethon** | MTProto client for silent scanning |
+| **RapidFuzz** | Fuzzy title matching |
+| **Jellyfish** | Phonetic performer matching |
+| **Requests** | GraphQL → StashDB/FansDB |
+
+## 🔑 StashDB Setup
+
+1. Get an API key from [stashdb.org](https://stashdb.org)
+2. Add to `.env`: `STASHDB_API_KEY=your_jwt_here`
+3. Restart and run `/threshold 80`
+
+Without a key, everything falls back to local filename parsing — still works, just less juicy.
 
 ---
 
-Built by Razer.
+<p align="center">
+  <sub>Built by <a href="https://github.com/Therazerhub">Razer</a></sub>
+  <br>
+  <sub><i>"Sweet when needed, savage when deserved."</i></sub>
+</p>
