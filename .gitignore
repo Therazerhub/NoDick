@@ -1,0 +1,40 @@
+# NoDick — Git ignore
+
+# Environment
+.env
+
+# Deploy key
+.github_deploy_key
+.github_deploy_key.pub
+
+# Runtime
+runtime/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+venv/
+
+# Telethon session files
+*.session
+*.session-journal
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Performer DB
+performers.db
