@@ -181,11 +181,12 @@ def _init_pg():
             ("action_buttons_enabled", "1"),
         )
         # Column migrations (check existence via information_schema)
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name='videos'"
+        )
         existing = {
             row[0]
-            for row in cur.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name='videos'"
-            )
+            for row in cur.fetchall()
         }
         pg_migrations = {
             "source_chat_id": "ALTER TABLE videos ADD COLUMN IF NOT EXISTS source_chat_id BIGINT",
