@@ -123,6 +123,7 @@ async def _send_video_ref(
                 from_chat_id=int(channel_id),
                 message_id=int(message_id),
                 caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
                 reply_markup=reply_markup,
             )
         elif file_ref.startswith("channel_ref:"):
@@ -133,6 +134,7 @@ async def _send_video_ref(
                 from_chat_id=int(channel_id),
                 message_id=int(message_id),
                 caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
                 reply_markup=reply_markup,
             )
         else:
@@ -140,6 +142,7 @@ async def _send_video_ref(
                 chat_id=chat_id,
                 video=file_ref,
                 caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
                 reply_markup=reply_markup,
             )
     except Exception as e:
