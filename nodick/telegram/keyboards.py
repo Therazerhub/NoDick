@@ -111,15 +111,19 @@ def part_nav_row(siblings: list[dict], video_id: int) -> list[InlineKeyboardButt
     if not current:
         return None
 
+    # Find actual index in list (handles duplicate part numbers)
+    current_idx = next(i for i, s in enumerate(siblings) if s["id"] == video_id)
+    total = len(siblings)
+
     row = []
-    if current["part"] > 1:
-        prev_video = siblings[current["part"] - 2]
+    if current_idx > 0:
+        prev_video = siblings[current_idx - 1]
         row.append(InlineKeyboardButton("◀️", callback_data=f"play_{prev_video['id']}"))
 
-    row.append(InlineKeyboardButton(f"📦 {current['part']}/{current['total']}", callback_data="noop"))
+    row.append(InlineKeyboardButton(f"📦 {current_idx + 1}/{total}", callback_data="noop"))
 
-    if current["part"] < current["total"]:
-        next_video = siblings[current["part"]]
+    if current_idx < total - 1:
+        next_video = siblings[current_idx + 1]
         row.append(InlineKeyboardButton("▶️", callback_data=f"play_{next_video['id']}"))
 
     return row

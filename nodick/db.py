@@ -647,7 +647,7 @@ def find_sibling_parts(video_id: int, title: str) -> list[dict]:
 
     _, current_part = parse_part_info(title)
     siblings.append({"id": video_id, "part": current_part or 0})
-    siblings.sort(key=lambda x: x["part"])
+    siblings.sort(key=lambda x: (x["part"], x["id"]))
     total = len(siblings)
     return [
         {"id": s["id"], "part": i + 1, "total": total}
