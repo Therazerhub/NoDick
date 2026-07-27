@@ -154,28 +154,35 @@ async def _enrich_and_send(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     video_id: int,
+    allow_redirect: bool = True,
 ):
-    """Fetch video + optional stash enrichment, send to chat."""
+    """Fetch video + optional stash enrichment, send to chat.
+
+    If ``allow_redirect`` is True and the video is part of a multi-part set
+    but not part 1, automatically redirect to part 1.
+    """
     row = get_video(video_id)
     if not row:
         if update.callback_query:
             await update.callback_query.answer("Missing video", show_alert=True)
         return
 
-    # Auto-redirect to part 1 if this is a multi-part video
     filename = row["title"] or ""
-    siblings = find_sibling_parts(video_id, filename)
-    if siblings:
-        part1 = next((s for s in siblings if s["part"] == 1), None)
-        if part1 and part1["id"] != video_id:
-            log.info("Redirecting to part 1 (was part %s)", next((s["part"] for s in siblings if s["id"] == video_id), "?"))
-            video_id = part1["id"]
-            row = get_video(video_id)
-            if not row:
-                if update.callback_query:
-                    await update.callback_query.answer("Missing video", show_alert=True)
-                return
-            filename = row["title"] or ""
+
+    # Auto-redirect to part 1 if this is a multi-part video (only for auto-picks)
+    if allow_redirect:
+        siblings = find_sibling_parts(video_id, filename)
+        if siblings:
+            part1 = next((s for s in siblings if s["part"] == 1), None)
+            if part1 and part1["id"] != video_id:
+                log.info("Redirecting to part 1 (was part %s)", next((s["part"] for s in siblings if s["id"] == video_id), "?"))
+                video_id = part1["id"]
+                row = get_video(video_id)
+                if not row:
+                    if update.callback_query:
+                        await update.callback_query.answer("Missing video", show_alert=True)
+                    return
+                filename = row["title"] or ""
 
     increment_view(video_id)
     chat_id = update.effective_chat.id
@@ -535,7 +542,7 @@ async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer("Loading...")
     video_id = int(q.data.split("_", 1)[1])
-    await _enrich_and_send(update, context, video_id)
+    await _enrich_and_send(update, context, video_id, allow_redirect=False)
 
 
 # ── Command: /threshold ────────────────────────────────────────────────────
