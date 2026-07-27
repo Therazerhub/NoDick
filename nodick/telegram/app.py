@@ -206,9 +206,11 @@ async def _enrich_and_send(
         buttons.insert(0, nav)
         markup = InlineKeyboardMarkup(buttons)
 
+    log.info("_enrich_and_send: calling _send_video_ref for video_id=%s", video_id)
     await _send_video_ref(
         context.bot, chat_id, row["file_id"], caption_text, markup
     )
+    log.info("_enrich_and_send: _send_video_ref returned successfully")
 
 
 def _duration(seconds: Optional[int]) -> str:
