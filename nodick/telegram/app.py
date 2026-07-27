@@ -117,32 +117,37 @@ def _is_admin(update: Update) -> bool:
 async def _send_video_ref(
     bot, chat_id: int, file_ref: str, caption: str, reply_markup=None
 ):
-    if file_ref.startswith("user_ref:"):
-        _, channel_id, message_id = file_ref.split(":", 2)
-        await bot.copy_message(
-            chat_id=chat_id,
-            from_chat_id=int(channel_id),
-            message_id=int(message_id),
-            caption=caption,
-            reply_markup=reply_markup,
-        )
-    elif file_ref.startswith("channel_ref:"):
-        # Stored by the Telethon scanner: channel_ref:channel_id:message_id
-        _, channel_id, message_id = file_ref.split(":", 2)
-        await bot.copy_message(
-            chat_id=chat_id,
-            from_chat_id=int(channel_id),
-            message_id=int(message_id),
-            caption=caption,
-            reply_markup=reply_markup,
-        )
-    else:
-        await bot.send_video(
-            chat_id=chat_id,
-            video=file_ref,
-            caption=caption,
-            reply_markup=reply_markup,
-        )
+    try:
+        if file_ref.startswith("user_ref:"):
+            _, channel_id, message_id = file_ref.split(":", 2)
+            await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=int(channel_id),
+                message_id=int(message_id),
+                caption=caption,
+                reply_markup=reply_markup,
+            )
+        elif file_ref.startswith("channel_ref:"):
+            # Stored by the Telethon scanner: channel_ref:channel_id:message_id
+            _, channel_id, message_id = file_ref.split(":", 2)
+            await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=int(channel_id),
+                message_id=int(message_id),
+                caption=caption,
+                reply_markup=reply_markup,
+            )
+        else:
+            await bot.send_video(
+                chat_id=chat_id,
+                video=file_ref,
+                caption=caption,
+                reply_markup=reply_markup,
+            )
+    except Exception as e:
+        log.error("Failed to send video ref %s: %s", file_ref[:30], e)
+        # Try to notify user if we have a callback query context
+        raise
 
 
 async def _enrich_and_send(
@@ -231,12 +236,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def random_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        await update.callback_query.answer("Opening the vault...")
+    # Don't pre-answer — let _enrich_and_send handle it (or error handler on failure)
     row = db_random()
     if not row:
         text = "🥺 NoDick is empty. Send a video or use /import."
         if update.callback_query:
+            await update.callback_query.answer()
             await update.callback_query.edit_message_text(
                 text, reply_markup=main_menu(update.effective_user.id)
             )
