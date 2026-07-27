@@ -251,7 +251,9 @@ async def random_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    log.info("random_video: calling _enrich_and_send for video_id=%s", row["id"])
     await _enrich_and_send(update, context, row["id"])
+    log.info("random_video: _enrich_and_send returned")
 
 
 # ── Command: /search ───────────────────────────────────────────────────────
@@ -345,7 +347,10 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📁 Categories: {cats:,}"
     )
     if update.callback_query:
+        log.info("Editing message %s with stats for user %s", 
+                 update.callback_query.message.message_id, update.effective_user.id)
         await update.callback_query.edit_message_text(text, reply_markup=back())
+        log.info("Stats edit successful")
     else:
         await update.message.reply_text(
             text, reply_markup=main_menu(update.effective_user.id)
