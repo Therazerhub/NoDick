@@ -182,8 +182,9 @@ async def _enrich_and_send(
     if not caption_text or source == "local":
         base = clean_title_for_display(filename)
         caption_text = (
-            f"📁 *{base}*\n\n"
-            f"⏱ {format_duration(row['duration'])} | 👁 {row['view_count'] + 1}"
+            f"📁 {base}\n\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"⏱ {format_duration(row['duration'])}"
         )
 
     meta = get_video_metadata(video_id)
