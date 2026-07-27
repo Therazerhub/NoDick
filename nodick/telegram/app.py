@@ -337,26 +337,34 @@ async def search_page_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        await update.callback_query.answer()
-    total = db_video_count()
-    views = total_views()
-    cats = category_count()
-    text = (
-        f"📊 NoDick Stats\n\n"
-        f"📹 Videos: {total:,}\n"
-        f"👁 Views: {views:,}\n"
-        f"📁 Categories: {cats:,}"
-    )
-    if update.callback_query:
-        log.info("Editing message %s with stats for user %s", 
-                 update.callback_query.message.message_id, update.effective_user.id)
-        await update.callback_query.edit_message_text(text, reply_markup=back())
-        log.info("Stats edit successful")
-    else:
-        await update.message.reply_text(
-            text, reply_markup=main_menu(update.effective_user.id)
+    try:
+        if update.callback_query:
+            await update.callback_query.answer()
+        total = db_video_count()
+        views = total_views()
+        cats = category_count()
+        text = (
+            f"📊 NoDick Stats\n\n"
+            f"📹 Videos: {total:,}\n"
+            f"👁 Views: {views:,}\n"
+            f"📁 Categories: {cats:,}"
         )
+        if update.callback_query:
+            log.info("Stats: editing message %s for user %s",
+                     update.callback_query.message.message_id, update.effective_user.id)
+            await update.callback_query.edit_message_text(text, reply_markup=back())
+            log.info("Stats: edit successful")
+        else:
+            await update.message.reply_text(
+                text, reply_markup=main_menu(update.effective_user.id)
+            )
+    except Exception as e:
+        log.error("Stats handler error: %s | %s", e, repr(e), exc_info=True)
+        if update and update.callback_query:
+            try:
+                await update.callback_query.answer(f"⚠️ {str(e)[:50]}", show_alert=True)
+            except Exception:
+                pass
 
 
 # ── Command: /categories ──────────────────────────────────────────────────
