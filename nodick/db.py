@@ -364,10 +364,11 @@ def search_videos(query: str, page: int = 0, per_page: int = 10) -> tuple[list, 
     term = f"%{query}%"
     like_op = "ILIKE" if _using_pg else "LIKE"
     if _using_pg:
-        total = _fetchone(
-            f"SELECT COUNT(*) FROM videos WHERE title {like_op} %s OR category {like_op} %s OR tags {like_op} %s",
+        total_row = _fetchone(
+            f"SELECT COUNT(*) AS cnt FROM videos WHERE title {like_op} %s OR category {like_op} %s OR tags {like_op} %s",
             (term, term, term),
-        )[0]
+        )
+        total = total_row["cnt"]
         rows = _fetchall(
             f"SELECT id, title, duration FROM videos WHERE title {like_op} %s OR category {like_op} %s OR tags {like_op} %s ORDER BY id DESC LIMIT %s OFFSET %s",
             (term, term, term, per_page, page * per_page),
@@ -384,18 +385,18 @@ def search_videos(query: str, page: int = 0, per_page: int = 10) -> tuple[list, 
     return rows, total
 
 
-def video_count() -> int:
-    return _fetchone("SELECT COUNT(*) FROM videos")[0]
 
+def video_count() -> int:
+    return _fetchone("SELECT COUNT(*) AS cnt FROM videos")["cnt"] if _using_pg else _fetchone("SELECT COUNT(*) FROM videos")[0]
 
 def total_views() -> int:
-    return _fetchone("SELECT COALESCE(SUM(view_count), 0) FROM videos")[0]
-
+    return _fetchone("SELECT COALESCE(SUM(view_count), 0) AS cnt FROM videos")["cnt"] if _using_pg else _fetchone("SELECT COALESCE(SUM(view_count), 0) FROM videos")[0]
 
 def category_count() -> int:
-    return _fetchone(
-        "SELECT COUNT(DISTINCT category) FROM videos WHERE category IS NOT NULL"
-    )[0]
+    row = _fetchone(
+        "SELECT COUNT(DISTINCT category) AS cnt FROM videos WHERE category IS NOT NULL"
+    )
+    return row["cnt"] if _using_pg and row else row[0] if row else 0
 
 
 def get_categories() -> list[dict]:
@@ -406,9 +407,10 @@ def get_categories() -> list[dict]:
 
 def get_videos_by_category(category: str, page: int = 0, per_page: int = 10) -> tuple[list, int]:
     if _using_pg:
-        total = _fetchone(
-            "SELECT COUNT(*) FROM videos WHERE category = %s", (category,)
-        )[0]
+        total_row = _fetchone(
+            "SELECT COUNT(*) AS cnt FROM videos WHERE category = %s", (category,)
+        )
+        total = total_row["cnt"]
         rows = _fetchall(
             "SELECT id, title, duration FROM videos WHERE category = %s ORDER BY id DESC LIMIT %s OFFSET %s",
             (category, per_page, page * per_page),
@@ -493,9 +495,10 @@ def toggle_favorite(user_id: int, video_id: int) -> bool:
 
 def get_favorites(user_id: int, page: int = 0, per_page: int = 10) -> tuple[list, int]:
     if _using_pg:
-        total = _fetchone(
-            "SELECT COUNT(*) FROM favorites WHERE user_id = %s", (user_id,)
-        )[0]
+        total_row = _fetchone(
+            "SELECT COUNT(*) AS cnt FROM favorites WHERE user_id = %s", (user_id,)
+        )
+        total = total_row["cnt"]
         rows = _fetchall(
             """SELECT v.id, v.title, v.duration FROM favorites f
                JOIN videos v ON v.id = f.video_id
@@ -524,7 +527,7 @@ def get_bot_setting(key: str, default: str = "") -> str:
         "SELECT value FROM bot_settings WHERE key = %s" if _using_pg else "SELECT value FROM bot_settings WHERE key = ?",
         (key,),
     )
-    return row[0] if row else default
+    return row["value"] if _using_pg and row else row[0] if row else default
 
 
 def set_bot_setting(key: str, value: str) -> None:
@@ -564,7 +567,7 @@ def user_setting(user_id: int, key: str) -> Optional[bool]:
             "SELECT show_action_buttons FROM user_settings WHERE user_id = %s" if _using_pg else "SELECT show_action_buttons FROM user_settings WHERE user_id = ?",
             (user_id,),
         )
-        return bool(row[0]) if row else None
+        return bool(row["show_action_buttons"]) if _using_pg and row else bool(row[0]) if row else None
     return None
 
 
