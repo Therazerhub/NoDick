@@ -645,33 +645,29 @@ def generate_clean_caption(scene_data: dict, original_filename: str = None, sour
     tags = scene_data.get('tags', [])
     tag_list = get_top_tags(tags, max_tags=5)
     
-    # Build clean caption with separators
+    # Build sexy caption with separators (no emojis, clean style)
     lines = []
     
-    # Source indicator + title
+    # Source indicator
     source_emoji = "🌐" if source in ("stashdb", "fansdb") else "📁"
     
-    title_line = f"{source_emoji} {performer_str} — {title}" if performer_str and performer_str.lower() not in title.lower() else f"{source_emoji} {title}"
-    lines.append(title_line)
+    # Title line with performer
+    if performer_str and performer_str.lower() not in title.lower():
+        lines.append(f"{source_emoji} *{performer_str} — {title}*")
+    else:
+        lines.append(f"{source_emoji} *{title}*")
+    
+    # Studio in monospace (no emoji)
+    if studio_name:
+        lines.append(f"`{studio_name}`")
     
     # Separator
-    lines.append("")
     lines.append("━━━━━━━━━━━━━━")
-    lines.append("")
     
-    # Studio + duration
-    studio_part = studio_name if studio_name else ""
-    if studio_part:
-        lines.append(studio_part)
-    
-    # Separator before tags
+    # Tags in monospace (no emoji)
     if tag_list:
-        lines.append("")
-        lines.append("━━━━━━━━━━━━━━")
-        lines.append("")
-        # Tags inline
-        tags_str = '  '.join([f'#{tag}' for tag in tag_list])
-        lines.append(tags_str)
+        tags_str = ' '.join([f'`#{tag}`' for tag in tag_list])
+        lines.append(f"{tags_str}")
     
     caption = '\n'.join(lines)
     
@@ -1069,16 +1065,16 @@ def _process_video_caption_impl(filename: str) -> Tuple[str, str, dict]:
     # Build caption in same format as StashDB (📁 for local instead of 🌐)
     lines = []
     if performer_str:
-        lines.append(f"📁 {performer_str} — {title_str}")
+        lines.append(f"📁 *{performer_str} — {title_str}*")
     else:
-        lines.append(f"📁 {title_str}")
+        lines.append(f"📁 *{title_str}*")
     
-    # Add detected studio
+    # Add detected studio in monospace
     if detected_studio:
-        lines.append("")
-        lines.append("━━━━━━━━━━━━━━")
-        lines.append("")
-        lines.append(detected_studio)
+        lines.append(f"`{detected_studio}`")
+    
+    # Separator
+    lines.append("━━━━━━━━━━━━━━")
     
     caption = '\n'.join(lines)
     
