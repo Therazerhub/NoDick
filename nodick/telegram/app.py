@@ -161,12 +161,18 @@ async def _enrich_and_send(
     filename = row["title"] or ""
     chat_id = update.effective_chat.id
 
-    # Try stash enrichment
+    # Try stash enrichment (with timeout — don't let slow API block all buttons)
     caption_text = None
     source = "local"
     if _stash_available and filename:
         try:
-            caption_text, source = process_video_caption(filename)
+            loop = asyncio.get_event_loop()
+            caption_text, source = await asyncio.wait_for(
+                loop.run_in_executor(None, process_video_caption, filename),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            log.warning("Stash enrichment timed out for: %s", filename[:50])
         except Exception as e:
             log.debug("Stash enrichment failed: %s", e)
 
@@ -1007,12 +1013,19 @@ async def handle_rename_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Log errors with the actual exception first, before the massive update dump."""
+    """Log errors and answer callback queries so buttons don't hang."""
     err = context.error
     update_id = update.update_id if update else None
     cb_data = None
     if update and update.callback_query:
         cb_data = update.callback_query.data
+        try:
+            await update.callback_query.answer(
+                "⚠️ Something broke — check logs" if cb_data else None,
+                show_alert=True,
+            )
+        except Exception:
+            pass
     log.error("⚠️ Error: %s | type=%s | repr=%s | update_id=%s callback=%s",
               err, type(err).__name__, repr(err), update_id, cb_data)
 
@@ -1025,12 +1038,24 @@ async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
 
+async def _catchall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Catch any callback queries that didn't match a specific handler."""
+    q = update.callback_query
+    log.warning("⚠️ Unhandled callback: %s | from_user=%s", q.data, q.from_user.id if q.from_user else "?")
+    await q.answer("⏳ This button isn't wired up yet", show_alert=False)
+
+
 # ── Application builder ────────────────────────────────────────────────────
 
 
 def build_application() -> Application:
     init_db()
-    app = Application.builder().token(settings.bot_token).build()
+    app = (
+        Application.builder()
+        .token(settings.bot_token)
+        .concurrent_updates(True)
+        .build()
+    )
 
     # ── Commands ──
     app.add_handler(CommandHandler("start", start))
@@ -1068,6 +1093,8 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_correct_callback, pattern="^correct_"))
     app.add_handler(CallbackQueryHandler(scanimport_callback, pattern="^scanimport_"))
     app.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
+    # Catch-all for unhandled callback queries — log + answer so buttons don't freeze
+    app.add_handler(CallbackQueryHandler(_catchall_callback))
 
     # ── Message handlers ──
     # Forwarded-from-channel detection must come BEFORE video handler
