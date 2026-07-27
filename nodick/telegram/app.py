@@ -162,8 +162,22 @@ async def _enrich_and_send(
             await update.callback_query.answer("Missing video", show_alert=True)
         return
 
-    increment_view(video_id)
+    # Auto-redirect to part 1 if this is a multi-part video
     filename = row["title"] or ""
+    siblings = find_sibling_parts(video_id, filename)
+    if siblings:
+        part1 = next((s for s in siblings if s["part"] == 1), None)
+        if part1 and part1["id"] != video_id:
+            log.info("Redirecting to part 1 (was part %s)", next((s["part"] for s in siblings if s["id"] == video_id), "?"))
+            video_id = part1["id"]
+            row = get_video(video_id)
+            if not row:
+                if update.callback_query:
+                    await update.callback_query.answer("Missing video", show_alert=True)
+                return
+            filename = row["title"] or ""
+
+    increment_view(video_id)
     chat_id = update.effective_chat.id
 
     # Try stash enrichment (with timeout — don't let slow API block all buttons)
