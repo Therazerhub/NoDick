@@ -387,16 +387,16 @@ def search_videos(query: str, page: int = 0, per_page: int = 10) -> tuple[list, 
 
 
 def video_count() -> int:
-    return _fetchone("SELECT COUNT(*) AS cnt FROM videos")["cnt"] if _using_pg else _fetchone("SELECT COUNT(*) FROM videos")[0]
+    row = _fetchone("SELECT COUNT(*) AS cnt FROM videos")
+    return row["cnt"] if _using_pg else row[0]
 
 def total_views() -> int:
-    return _fetchone("SELECT COALESCE(SUM(view_count), 0) AS cnt FROM videos")["cnt"] if _using_pg else _fetchone("SELECT COALESCE(SUM(view_count), 0) FROM videos")[0]
+    row = _fetchone("SELECT COALESCE(SUM(view_count), 0) AS cnt FROM videos")
+    return row["cnt"] if _using_pg else row[0]
 
 def category_count() -> int:
-    row = _fetchone(
-        "SELECT COUNT(DISTINCT category) AS cnt FROM videos WHERE category IS NOT NULL"
-    )
-    return row["cnt"] if _using_pg and row else row[0] if row else 0
+    row = _fetchone("SELECT COUNT(DISTINCT category) AS cnt FROM videos WHERE category IS NOT NULL")
+    return row["cnt"] if _using_pg else row[0] if row else 0
 
 
 def get_categories() -> list[dict]:

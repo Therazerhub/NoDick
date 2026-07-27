@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from typing import Optional
 
@@ -13,6 +14,7 @@ from telegram import (
     Update,
     User,
 )
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -90,21 +92,17 @@ except ImportError as e:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-WELCOME_MSG = """🖤 NoDick
+WELCOME_MSG = """🖤 **NoDick** 🖤
 
-Your fucking stash index. Cleaner than your browser history. 🥴
+━━━━━━━━━━━━━━━━━━━━
 
-🎲 /random — surprise me
-🔍 /search <keyword> — find shit
-📊 /stats — collection flex
-📥 /import <channel_id> — admin import
+*Perfectly organized filth.*
 
-More:
-📁 /categories — browse by studio
-⭐ /favorites — your saved
-⚙️ /settings — admin panel
-🎭 /performer <name> — StashDB lookup
-📏 /threshold <0-100> — match sensitivity"""
+**What are you waiting for?** 😈
+
+━━━━━━━━━━━━━━━━━━━━
+
+⚡ Engineered by **@TheRazerhub** 🔥"""
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -225,13 +223,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user:
         ensure_user_exists(user.id)
     markup = main_menu(user.id if user else None)
+    
+    # Path to logo
+    logo_path = os.path.join(os.path.dirname(__file__), "..", "assets", "logo.jpg")
+    
     if update.callback_query:
+        # For callback (Back to Menu button), just edit text
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
-            WELCOME_MSG, reply_markup=markup
+            WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
         )
     else:
-        await update.message.reply_text(WELCOME_MSG, reply_markup=markup)
+        # For /start command, send with logo
+        if os.path.exists(logo_path):
+            with open(logo_path, "rb") as photo:
+                await update.message.reply_photo(
+                    photo=photo,
+                    caption=WELCOME_MSG,
+                    reply_markup=markup,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            # Fallback if logo missing
+            await update.message.reply_text(
+                WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+            )
 
 
 # ── Command: /random ───────────────────────────────────────────────────────

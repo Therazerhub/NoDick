@@ -198,6 +198,11 @@ query SearchScenes($term: String!, $limit: Int = 5) {
     tags {
       name
     }
+    images {
+      url
+      width
+      height
+    }
   }
 }
 """
@@ -1003,12 +1008,21 @@ def _process_video_caption_impl(filename: str) -> Tuple[str, str, dict]:
             caption = generate_clean_caption(best_scene, filename, source=best_source, 
                                            performer=display_performer, title=display_title)
             
+            # Extract thumbnail URL from scene images
+            thumbnail_url = None
+            if best_scene and 'images' in best_scene:
+                images = best_scene.get('images', [])
+                if images and isinstance(images, list) and len(images) > 0:
+                    # Get first image URL
+                    thumbnail_url = images[0].get('url') if isinstance(images[0], dict) else None
+            
             # Store metadata for potential rename
             metadata = {
                 'original_filename': filename,
                 'match_score': best_match,
                 'match_source': best_source,
                 'scene_data': best_scene,
+                'thumbnail_url': thumbnail_url,
                 'should_rename': should_offer_rename,
                 'rename_suggestion': rename_suggestion
             }
