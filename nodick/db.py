@@ -644,11 +644,22 @@ def get_user_size_limit(user_id: int) -> Optional[int]:
 
 def set_user_size_limit(user_id: int, mb: Optional[int]) -> None:
     """Set user's max video size in MB (None = unlimited)."""
-    ph = "%s" if _using_pg else "?"
-    _execute(
-        f"UPDATE user_settings SET max_size_mb = {ph} WHERE user_id = {ph}",
-        (mb, user_id),
-    )
+    if _using_pg:
+        _execute(
+            """INSERT INTO user_settings (user_id, max_size_mb, last_seen)
+               VALUES (%s, %s, CURRENT_TIMESTAMP)
+               ON CONFLICT (user_id) DO UPDATE
+               SET max_size_mb = EXCLUDED.max_size_mb, last_seen = CURRENT_TIMESTAMP""",
+            (user_id, mb),
+        )
+    else:
+        _execute(
+            """INSERT INTO user_settings (user_id, max_size_mb, last_seen)
+               VALUES (?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id) DO UPDATE
+               SET max_size_mb = excluded.max_size_mb, last_seen = CURRENT_TIMESTAMP""",
+            (user_id, mb),
+        )
 
 
 # ── Import Jobs ────────────────────────────────────────────────────────────
