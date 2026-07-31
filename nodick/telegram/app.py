@@ -33,6 +33,7 @@ from nodick.db import (
     get_bot_setting,
     get_categories,
     get_favorites,
+    get_user_size_limit,
     get_video,
     get_video_metadata,
     get_videos_by_category,
@@ -42,17 +43,23 @@ from nodick.db import (
     random_video as db_random,
     search_videos,
     set_bot_setting,
+    set_user_size_limit,
     total_views,
+    update_video_size,
     upsert_video,
     video_count as db_video_count,
 )
 from nodick.services.importer import TelegramImporter
-from nodick.services.message_importer import MessageIDImporter
+from nodick.services.message_importer import (
+    MessageIDImporter,
+    _get_telethon_client as _get_telethon_bot,
+)
 from nodick.telegram.keyboards import (
     back,
     import_menu as import_keyboard,
     main_menu,
     part_nav_row,
+    quality_keyboard,
     settings_keyboard,
     video_actions,
 )
@@ -233,6 +240,10 @@ async def _enrich_and_send(
     )
     log.info("_enrich_and_send: _send_video_ref returned successfully")
 
+    # Lazy size backfill — fire-and-forget when we don't know the size yet
+    if not row.get("file_size"):
+        asyncio.create_task(_lazy_fill_size(video_id, row["file_id"]))
+
 
 def _duration(seconds: Optional[int]) -> str:
     return format_duration(seconds)
@@ -263,7 +274,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def random_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Don't pre-answer — let _enrich_and_send handle it (or error handler on failure)
-    row = db_random()
+    limit = get_user_size_limit(update.effective_user.id) if update.effective_user else None
+    row = db_random(limit)
     if not row:
         text = "🥺 NoDick is empty. Send a video or use /import."
         if update.callback_query:
@@ -309,7 +321,8 @@ async def _show_search(
     page: int = 0,
 ):
     per_page = 10
-    rows, total = search_videos(query, page=page, per_page=per_page)
+    limit = get_user_size_limit(update.effective_user.id) if update.effective_user else None
+    rows, total = search_videos(query, page=page, per_page=per_page, max_size_mb=limit)
 
     if not rows:
         text, markup = "🥺 No matches.", back()
@@ -439,7 +452,8 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     per_page = 10
-    rows, total = get_videos_by_category(category, page=page, per_page=per_page)
+    limit = get_user_size_limit(update.effective_user.id) if update.effective_user else None
+    rows, total = get_videos_by_category(category, page=page, per_page=per_page, max_size_mb=limit)
     if not rows:
         await q.edit_message_text("🥺 No videos.", reply_markup=back())
         return
@@ -490,7 +504,10 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(q.data.split("_", 1)[1])
 
     per_page = 10
-    rows, total = get_favorites(user_id, page=page, per_page=per_page)
+    rows, total = get_favorites(
+        user_id, page=page, per_page=per_page,
+        max_size_mb=get_user_size_limit(user_id),
+    )
     if not rows:
         await q.edit_message_text(
             "⭐ No favorites yet. Tap 💦 on a video to save it.",
@@ -643,6 +660,58 @@ async def toggle_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             "⚙️ Settings toggled.", reply_markup=settings_keyboard()
         )
+
+
+# ── Quality (max file size) filter ─────────────────────────────────────────
+
+
+async def quality_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(update):
+        await q.edit_message_text("❌ Admin only.", reply_markup=back())
+        return
+    await q.edit_message_text(
+        "🎬 *Quality* — only show videos under your size cap\n\n"
+        "Videos whose size isn't known yet pass through until backfill catches them.",
+        reply_markup=quality_keyboard(update.effective_user.id),
+        parse_mode="Markdown",
+    )
+
+
+async def quality_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(update):
+        await q.edit_message_text("❌ Admin only.", reply_markup=back())
+        return
+    mb = int(q.data.split("_", 1)[1])  # quality_500 -> 500, quality_0 -> 0
+    set_user_size_limit(update.effective_user.id, mb or None)
+    await q.edit_message_text(
+        "🎬 Quality updated.", reply_markup=quality_keyboard(update.effective_user.id)
+    )
+
+
+async def _lazy_fill_size(video_id: int, file_ref: str) -> None:
+    """Fire-and-forget: fetch size for a channel_ref video via Telethon."""
+    try:
+        if not file_ref.startswith("channel_ref:"):
+            return
+        _, channel_id, message_id = file_ref.split(":", 2)
+        client = await _get_telethon_bot()
+        msgs = await client.get_messages(
+            int(channel_id), ids=[int(message_id)]
+        )
+        msg = msgs[0] if isinstance(msgs, list) and msgs else msgs
+        if not msg:
+            return
+        doc = getattr(msg, "document", None) or getattr(msg, "video", None)
+        size = getattr(doc, "size", None)
+        if size:
+            update_video_size(video_id, int(size))
+            log.info("Lazy size fill: video_id=%s -> %s bytes", video_id, size)
+    except Exception as e:
+        log.debug("Lazy size fill failed for video_id=%s: %s", video_id, e)
 
 
 # ── Command: /import ──────────────────────────────────────────────────────
@@ -1133,6 +1202,8 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(stats, pattern="^stats$"))
     app.add_handler(CallbackQueryHandler(settings_command, pattern="^settings$"))
     app.add_handler(CallbackQueryHandler(toggle_setting, pattern="^toggle_"))
+    app.add_handler(CallbackQueryHandler(quality_menu, pattern="^quality$"))
+    app.add_handler(CallbackQueryHandler(quality_set, pattern="^quality_\\d+$"))
     app.add_handler(CallbackQueryHandler(handle_rename_callback, pattern="^rename_"))
     app.add_handler(CallbackQueryHandler(handle_correct_callback, pattern="^correct_"))
     app.add_handler(CallbackQueryHandler(scanimport_callback, pattern="^scanimport_"))

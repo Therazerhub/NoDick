@@ -152,6 +152,7 @@ def _init_pg():
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id BIGINT PRIMARY KEY,
                 show_action_buttons INTEGER DEFAULT 1,
+                max_size_mb INTEGER,
                 is_admin INTEGER DEFAULT 0,
                 first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -207,6 +208,17 @@ def _init_pg():
                 except Exception:
                     pass
 
+        # user_settings migrations
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name='user_settings'"
+        )
+        us_existing = {row[0] for row in cur.fetchall()}
+        if "max_size_mb" not in us_existing:
+            try:
+                cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS max_size_mb INTEGER")
+            except Exception:
+                pass
+
 
 def _init_sqlite():
     SCHEMA = """
@@ -252,6 +264,7 @@ def _init_sqlite():
     CREATE TABLE IF NOT EXISTS user_settings (
         user_id INTEGER PRIMARY KEY,
         show_action_buttons INTEGER DEFAULT 1,
+        max_size_mb INTEGER,
         is_admin INTEGER DEFAULT 0,
         first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -301,8 +314,36 @@ def _init_sqlite():
                 except sqlite3.OperationalError:
                     pass
 
+        us_existing = {row[1] for row in conn.execute("PRAGMA table_info(user_settings)")}
+        if "max_size_mb" not in us_existing:
+            try:
+                conn.execute("ALTER TABLE user_settings ADD COLUMN max_size_mb INTEGER")
+            except sqlite3.OperationalError:
+                pass
+
 
 # ── Video CRUD ──────────────────────────────────────────────────────────
+
+def _size_filter(max_size_mb: Optional[int], col: str = "file_size") -> tuple[str, tuple]:
+    """Build (sql_chunk, params) for the size filter.
+
+    Videos with unknown size pass through (NULL), so the filter is
+    best-effort until backfill fills in the sizes.
+    """
+    if not max_size_mb:
+        return "", ()
+    ph = "%s" if _using_pg else "?"
+    return f" AND ({col} IS NULL OR {col} <= {ph})", (max_size_mb * 1024 * 1024,)
+
+
+def update_video_size(video_id: int, file_size: int) -> None:
+    """Fill in a missing file_size (used by lazy + bulk backfill)."""
+    ph = "%s" if _using_pg else "?"
+    _execute(
+        f"UPDATE videos SET file_size = {ph} WHERE id = {ph} AND (file_size IS NULL OR file_size <= 0)",
+        (file_size, video_id),
+    )
+
 
 def upsert_video(
     *,
@@ -348,7 +389,13 @@ def get_video(video_id: int) -> Optional[dict]:
     return _fetchone("SELECT * FROM videos WHERE id = %s" if _using_pg else "SELECT * FROM videos WHERE id = ?", (video_id,))
 
 
-def random_video() -> Optional[dict]:
+def random_video(max_size_mb: Optional[int] = None) -> Optional[dict]:
+    if max_size_mb:
+        ph = "%s" if _using_pg else "?"
+        return _fetchone(
+            f"SELECT * FROM videos WHERE file_size IS NULL OR file_size <= {ph} ORDER BY RANDOM() LIMIT 1",
+            (max_size_mb * 1024 * 1024,),
+        )
     return _fetchone("SELECT * FROM videos ORDER BY RANDOM() LIMIT 1")
 
 
@@ -359,28 +406,29 @@ def increment_view(video_id: int) -> None:
     )
 
 
-def search_videos(query: str, page: int = 0, per_page: int = 10) -> tuple[list, int]:
+def search_videos(query: str, page: int = 0, per_page: int = 10, max_size_mb: Optional[int] = None) -> tuple[list, int]:
     """Search videos by title/category/tags. Returns (rows, total_count)."""
     term = f"%{query}%"
     like_op = "ILIKE" if _using_pg else "LIKE"
+    size_chunk, size_params = _size_filter(max_size_mb)
     if _using_pg:
         total_row = _fetchone(
-            f"SELECT COUNT(*) AS cnt FROM videos WHERE title {like_op} %s OR category {like_op} %s OR tags {like_op} %s",
-            (term, term, term),
+            f"SELECT COUNT(*) AS cnt FROM videos WHERE (title {like_op} %s OR category {like_op} %s OR tags {like_op} %s){size_chunk}",
+            (term, term, term) + size_params,
         )
         total = total_row["cnt"]
         rows = _fetchall(
-            f"SELECT id, title, duration FROM videos WHERE title {like_op} %s OR category {like_op} %s OR tags {like_op} %s ORDER BY id DESC LIMIT %s OFFSET %s",
-            (term, term, term, per_page, page * per_page),
+            f"SELECT id, title, duration FROM videos WHERE (title {like_op} %s OR category {like_op} %s OR tags {like_op} %s){size_chunk} ORDER BY id DESC LIMIT %s OFFSET %s",
+            (term, term, term) + size_params + (per_page, page * per_page),
         )
     else:
         total = _fetchone(
-            "SELECT COUNT(*) FROM videos WHERE title LIKE ? OR category LIKE ? OR tags LIKE ?",
-            (term, term, term),
+            f"SELECT COUNT(*) FROM videos WHERE (title LIKE ? OR category LIKE ? OR tags LIKE ?){size_chunk}",
+            (term, term, term) + size_params,
         )[0]
         rows = _fetchall(
-            "SELECT id, title, duration FROM videos WHERE title LIKE ? OR category LIKE ? OR tags LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?",
-            (term, term, term, per_page, page * per_page),
+            f"SELECT id, title, duration FROM videos WHERE (title LIKE ? OR category LIKE ? OR tags LIKE ?){size_chunk} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (term, term, term) + size_params + (per_page, page * per_page),
         )
     return rows, total
 
@@ -405,23 +453,24 @@ def get_categories() -> list[dict]:
     )
 
 
-def get_videos_by_category(category: str, page: int = 0, per_page: int = 10) -> tuple[list, int]:
+def get_videos_by_category(category: str, page: int = 0, per_page: int = 10, max_size_mb: Optional[int] = None) -> tuple[list, int]:
+    size_chunk, size_params = _size_filter(max_size_mb)
     if _using_pg:
         total_row = _fetchone(
-            "SELECT COUNT(*) AS cnt FROM videos WHERE category = %s", (category,)
+            f"SELECT COUNT(*) AS cnt FROM videos WHERE category = %s{size_chunk}", (category,) + size_params,
         )
         total = total_row["cnt"]
         rows = _fetchall(
-            "SELECT id, title, duration FROM videos WHERE category = %s ORDER BY id DESC LIMIT %s OFFSET %s",
-            (category, per_page, page * per_page),
+            f"SELECT id, title, duration FROM videos WHERE category = %s{size_chunk} ORDER BY id DESC LIMIT %s OFFSET %s",
+            (category,) + size_params + (per_page, page * per_page),
         )
     else:
         total = _fetchone(
-            "SELECT COUNT(*) FROM videos WHERE category = ?", (category,)
+            f"SELECT COUNT(*) FROM videos WHERE category = ?{size_chunk}", (category,) + size_params,
         )[0]
         rows = _fetchall(
-            "SELECT id, title, duration FROM videos WHERE category = ? ORDER BY id DESC LIMIT ? OFFSET ?",
-            (category, per_page, page * per_page),
+            f"SELECT id, title, duration FROM videos WHERE category = ?{size_chunk} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (category,) + size_params + (per_page, page * per_page),
         )
     return rows, total
 
@@ -493,29 +542,32 @@ def toggle_favorite(user_id: int, video_id: int) -> bool:
         return False
 
 
-def get_favorites(user_id: int, page: int = 0, per_page: int = 10) -> tuple[list, int]:
+def get_favorites(user_id: int, page: int = 0, per_page: int = 10, max_size_mb: Optional[int] = None) -> tuple[list, int]:
+    size_chunk, size_params = _size_filter(max_size_mb, "v.file_size")
     if _using_pg:
         total_row = _fetchone(
-            "SELECT COUNT(*) AS cnt FROM favorites WHERE user_id = %s", (user_id,)
+            f"SELECT COUNT(*) AS cnt FROM favorites f JOIN videos v ON v.id = f.video_id WHERE f.user_id = %s{size_chunk}",
+            (user_id,) + size_params,
         )
         total = total_row["cnt"]
         rows = _fetchall(
-            """SELECT v.id, v.title, v.duration FROM favorites f
+            f"""SELECT v.id, v.title, v.duration FROM favorites f
                JOIN videos v ON v.id = f.video_id
-               WHERE f.user_id = %s
+               WHERE f.user_id = %s{size_chunk}
                ORDER BY f.id DESC LIMIT %s OFFSET %s""",
-            (user_id, per_page, page * per_page),
+            (user_id,) + size_params + (per_page, page * per_page),
         )
     else:
         total = _fetchone(
-            "SELECT COUNT(*) FROM favorites WHERE user_id = ?", (user_id,)
+            f"SELECT COUNT(*) FROM favorites f JOIN videos v ON v.id = f.video_id WHERE f.user_id = ?{size_chunk}",
+            (user_id,) + size_params,
         )[0]
         rows = _fetchall(
-            """SELECT v.id, v.title, v.duration FROM favorites f
+            f"""SELECT v.id, v.title, v.duration FROM favorites f
                JOIN videos v ON v.id = f.video_id
-               WHERE f.user_id = ?
+               WHERE f.user_id = ?{size_chunk}
                ORDER BY f.id DESC LIMIT ? OFFSET ?""",
-            (user_id, per_page, page * per_page),
+            (user_id,) + size_params + (per_page, page * per_page),
         )
     return rows, total
 
@@ -577,6 +629,26 @@ def set_user_setting(user_id: int, key: str, value) -> None:
             "UPDATE user_settings SET show_action_buttons = %s WHERE user_id = %s" if _using_pg else "UPDATE user_settings SET show_action_buttons = ? WHERE user_id = ?",
             (1 if value else 0, user_id),
         )
+
+
+def get_user_size_limit(user_id: int) -> Optional[int]:
+    """User's max video size in MB (None = unlimited)."""
+    row = _fetchone(
+        "SELECT max_size_mb FROM user_settings WHERE user_id = %s" if _using_pg else "SELECT max_size_mb FROM user_settings WHERE user_id = ?",
+        (user_id,),
+    )
+    if not row:
+        return None
+    return row["max_size_mb"] if _using_pg else row[0]
+
+
+def set_user_size_limit(user_id: int, mb: Optional[int]) -> None:
+    """Set user's max video size in MB (None = unlimited)."""
+    ph = "%s" if _using_pg else "?"
+    _execute(
+        f"UPDATE user_settings SET max_size_mb = {ph} WHERE user_id = {ph}",
+        (mb, user_id),
+    )
 
 
 # ── Import Jobs ────────────────────────────────────────────────────────────

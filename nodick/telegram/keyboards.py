@@ -5,7 +5,7 @@ from __future__ import annotations
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
-from nodick.db import get_bot_setting
+from nodick.db import get_bot_setting, get_user_size_limit
 
 
 def _action_buttons_enabled() -> bool:
@@ -93,9 +93,31 @@ def settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton(action_text, callback_data="toggle_action_buttons")],
+            [InlineKeyboardButton("🎬 Quality", callback_data="quality")],
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
         ]
     )
+
+
+# Max file-size presets (MB). None = unlimited.
+QUALITY_OPTIONS: list[tuple[int | None, str]] = [
+    (None, "♾️ Unlimited"),
+    (500, "📦 Under 500 MB"),
+    (1024, "📦 Under 1 GB"),
+    (2048, "📦 Under 2 GB"),
+    (4096, "📦 Under 4 GB"),
+]
+
+
+def quality_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    current = get_user_size_limit(user_id)
+    rows = []
+    for mb, label in QUALITY_OPTIONS:
+        mark = " ✅" if mb == current else ""
+        cb = "quality_0" if mb is None else f"quality_{mb}"
+        rows.append([InlineKeyboardButton(f"{label}{mark}", callback_data=cb)])
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data="settings")])
+    return InlineKeyboardMarkup(rows)
 
 
 def part_nav_row(siblings: list[dict], video_id: int) -> list[InlineKeyboardButton] | None:
