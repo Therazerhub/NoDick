@@ -168,6 +168,8 @@ class PerformerDB:
     def _connect(self):
         """Connect to the SQLite database"""
         if self._conn is None:
+            # Ensure parent dir exists (Render image has no runtime/ dir)
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(self.db_path)
             self._conn.row_factory = sqlite3.Row
             self._cursor = self._conn.cursor()

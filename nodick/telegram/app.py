@@ -14,6 +14,7 @@ from telegram import (
     User,
 )
 from telegram.constants import ParseMode
+from telegram.error import RetryAfter
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -121,40 +122,58 @@ def _is_admin(update: Update) -> bool:
 async def _send_video_ref(
     bot, chat_id: int, file_ref: str, caption: str, reply_markup=None
 ):
-    try:
-        if file_ref.startswith("user_ref:"):
-            _, channel_id, message_id = file_ref.split(":", 2)
-            await bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=int(channel_id),
-                message_id=int(message_id),
-                caption=caption,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup,
+    """Send/copy a video ref with RetryAfter (flood control) handling.
+
+    Telegram rate-limits copyMessage from channels ("Flood control exceeded,
+    retry in N seconds"). Instead of dying instantly (which surfaces as
+    "⚠️ Something broke" to the user), wait out the delay and retry.
+    """
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            if file_ref.startswith("user_ref:"):
+                _, channel_id, message_id = file_ref.split(":", 2)
+                await bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=int(channel_id),
+                    message_id=int(message_id),
+                    caption=caption,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup,
+                )
+            elif file_ref.startswith("channel_ref:"):
+                # Stored by the Telethon scanner: channel_ref:channel_id:message_id
+                _, channel_id, message_id = file_ref.split(":", 2)
+                await bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=int(channel_id),
+                    message_id=int(message_id),
+                    caption=caption,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup,
+                )
+            else:
+                await bot.send_video(
+                    chat_id=chat_id,
+                    video=file_ref,
+                    caption=caption,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup,
+                )
+            return
+        except RetryAfter as e:
+            if attempt >= max_retries:
+                raise
+            delay = min(float(getattr(e, "retry_after", 5) or 5), 30)
+            log.warning(
+                "Flood control on send (%s), waiting %.0fs (attempt %d/%d)",
+                file_ref[:30], delay, attempt + 1, max_retries,
             )
-        elif file_ref.startswith("channel_ref:"):
-            # Stored by the Telethon scanner: channel_ref:channel_id:message_id
-            _, channel_id, message_id = file_ref.split(":", 2)
-            await bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=int(channel_id),
-                message_id=int(message_id),
-                caption=caption,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup,
-            )
-        else:
-            await bot.send_video(
-                chat_id=chat_id,
-                video=file_ref,
-                caption=caption,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup,
-            )
-    except Exception as e:
-        log.error("Failed to send video ref %s: %s", file_ref[:30], e)
-        # Try to notify user if we have a callback query context
-        raise
+            await asyncio.sleep(delay)
+        except Exception as e:
+            log.error("Failed to send video ref %s: %s", file_ref[:30], e)
+            # Try to notify user if we have a callback query context
+            raise
 
 
 async def _enrich_and_send(
