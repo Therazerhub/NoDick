@@ -345,6 +345,38 @@ def update_video_size(video_id: int, file_size: int) -> None:
     )
 
 
+def bulk_update_video_sizes(pairs: list[tuple[int, int]]) -> None:
+    """Batch-fill file_size for many videos — one statement per backend.
+
+    ``pairs`` is [(video_id, file_size), ...]. Only fills NULL/<=0 rows.
+    Critical for remote PG: per-row UPDATEs over the network are ~100x slower
+    than a single bulk UPDATE FROM (VALUES ...).
+    """
+    if not pairs:
+        return
+    if _using_pg:
+        from psycopg2.extras import execute_values
+
+        conn = _get_pg()
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """UPDATE videos SET file_size = v.size
+                   FROM (VALUES %s) AS v(id, size)
+                   WHERE videos.id = v.id
+                     AND (videos.file_size IS NULL OR videos.file_size <= 0)""",
+                pairs,
+                template="(%s, %s)",
+            )
+    else:
+        with connect() as conn:
+            # pairs are (video_id, file_size) — SQLite SQL wants (file_size, id)
+            conn.executemany(
+                "UPDATE videos SET file_size = ? WHERE id = ? AND (file_size IS NULL OR file_size <= 0)",
+                [(size, vid) for vid, size in pairs],
+            )
+
+
 def upsert_video(
     *,
     file_id: str,

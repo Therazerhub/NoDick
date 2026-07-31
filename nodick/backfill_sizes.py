@@ -25,7 +25,12 @@ import asyncio
 import logging
 import time
 
-from nodick.db import _fetchall, _fetchone, _using_pg, update_video_size
+from nodick.db import (
+    _fetchall,
+    _fetchone,
+    _using_pg,
+    bulk_update_video_sizes,
+)
 from nodick.services.message_importer import _batch_fetch, _get_telethon_client
 
 
@@ -76,6 +81,7 @@ async def backfill(
             batch = items[i:i + 100]
             msgs = await _batch_fetch(client, ch, [m for _, m in batch])
             id_to_msg = {getattr(m, "id", 0): m for m in (msgs or [])}
+            to_update: list[tuple[int, int]] = []
             for vid, mid in batch:
                 msg = id_to_msg.get(mid)
                 doc = getattr(msg, "document", None) if msg else None
@@ -83,10 +89,11 @@ async def backfill(
                 size = getattr(doc, "size", None) if doc else None
                 if size:
                     fixed += 1
-                    if not dry_run:
-                        update_video_size(vid, int(size))
+                    to_update.append((vid, int(size)))
                 else:
                     missing += 1
+            if to_update and not dry_run:
+                bulk_update_video_sizes(to_update)
             processed += len(batch)
 
             elapsed = time.monotonic() - start
@@ -94,7 +101,7 @@ async def backfill(
             eta = (total - processed) / rate if rate > 0 else 0
             print(f"\r  ⏳ {processed}/{total} | ✅ fixed: {fixed} | ❓ missing: {missing}"
                   f" | ETA {eta:.0f}s", end="", flush=True)
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.05)
 
     print()
     return {"total": total, "fixed": fixed, "missing": missing, "dry_run": dry_run}
