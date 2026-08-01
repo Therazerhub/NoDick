@@ -273,8 +273,13 @@ async def _enrich_and_send(
             )
             # Persist the enrichment so "More Like This" / Cast / tag search
             # work from the cache instead of re-querying StashDB every view.
-            if source == "stashdb":
-                save_enrichment(video_id, source, enrich_meta)
+            if source == "stashdb" and save_enrichment(video_id, source, enrich_meta):
+                # Freshly cached → refresh buttons NOW so 🎯/👤 appear on the
+                # first play, not the second one.
+                meta = get_video_metadata(video_id)
+                row_dict = dict(row)
+                row_tags = [t for t in (row_dict.get("tags") or "").split(",") if t]
+                cast = [p for p in (dict(meta).get("stashdb_performer") or "").split(",") if p] if meta else []
         except asyncio.TimeoutError:
             log.warning("Stash enrichment timed out for: %s", filename[:50])
         except Exception as e:
