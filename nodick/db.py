@@ -544,6 +544,140 @@ def get_video_metadata(video_id: int) -> Optional[dict]:
     )
 
 
+def set_video_tags(video_id: int, tags: list[str]) -> None:
+    """Store comma-wrapped tags (',Tag1,Tag2,') on the video row.
+
+    The wrapping lets us match exact tags via ``LIKE '%,Tag,%'`` while keeping
+    the existing substring search (``LIKE '%tag%'``) working.
+    """
+    clean = [t.strip() for t in tags if t and t.strip()]
+    if not clean:
+        return
+    wrapped = "," + ",".join(clean) + ","
+    ph = "%s" if _using_pg else "?"
+    _execute(f"UPDATE videos SET tags = {ph} WHERE id = {ph}", (wrapped, video_id))
+
+
+def save_enrichment(video_id: int, source: str, meta: Optional[dict]) -> bool:
+    """Persist a StashDB enrichment into video_metadata + videos.tags.
+
+    ``meta`` is the dict from ``stash.process_video_caption_with_metadata()``.
+    Returns True if anything was saved. Never touches corrected_* fields.
+    """
+    if not meta or source != "stashdb":
+        return False
+    sd = meta.get("scene_data") or {}
+    scene_id = sd.get("id")
+    if not scene_id:
+        return False
+    performers = [
+        p["performer"]["name"]
+        for p in sd.get("performers", [])
+        if p.get("performer", {}).get("name")
+    ]
+    tags = [t.get("name") for t in sd.get("tags", []) if t.get("name")]
+
+    fields = {"stashdb_scene_id": scene_id, "stashdb_confidence": meta.get("match_score", 0.0)}
+    if performers:
+        fields["stashdb_performer"] = "," + ",".join(performers) + ","
+    if sd.get("title"):
+        fields["stashdb_title"] = sd["title"]
+    if sd.get("studio"):
+        fields["stashdb_studio"] = sd["studio"]["name"]
+    upsert_video_metadata(video_id, **fields)
+    if tags:
+        set_video_tags(video_id, tags)
+    return True
+
+
+def pending_metadata_videos(limit: int = 100, random_order: bool = False) -> list[dict]:
+    """Videos missing a cached enrichment row (LEFT JOIN video_metadata IS NULL)."""
+    ph = "%s" if _using_pg else "?"
+    order = "RANDOM()" if random_order else "v.id"
+    rows = _fetchall(
+        f"SELECT v.id, v.title FROM videos v "
+        f"LEFT JOIN video_metadata m ON m.video_id = v.id "
+        f"WHERE m.video_id IS NULL AND v.title IS NOT NULL AND v.title != '' "
+        f"ORDER BY {order} LIMIT {ph}",
+        (limit,),
+    )
+    return [dict(r) for r in rows]
+
+
+def get_similar_videos(video_id: int, limit: int = 5) -> list[dict]:
+    """Videos sharing tags/performers with ``video_id``, ranked by overlap.
+
+    Performer matches count double. Requires cached metadata
+    (see ``save_enrichment`` / backfill_metadata.py).
+    """
+    row = get_video(video_id)
+    meta = get_video_metadata(video_id)
+    if not row:
+        return []
+
+    row_dict = dict(row)
+    meta_dict = dict(meta) if meta else {}
+    tags = [t for t in (row_dict.get("tags") or "").split(",") if t]
+    performers = [p for p in (meta_dict.get("stashdb_performer") or "").split(",") if p]
+    if not tags and not performers:
+        return []
+
+    ph = "%s" if _using_pg else "?"
+    exprs: list[str] = []
+    params: list = []
+    for t in tags:
+        exprs.append(f"(CASE WHEN v.tags LIKE {ph} THEN 1 ELSE 0 END)")
+        params.append(f"%,{t},%")
+    for p in performers:
+        exprs.append(f"(2 * (CASE WHEN m.stashdb_performer LIKE {ph} THEN 1 ELSE 0 END))")
+        params.append(f"%,{p},%")
+    score_sql = " + ".join(exprs)
+
+    rows = _fetchall(
+        f"SELECT v.id, v.title, v.duration, ({score_sql}) AS score "
+        f"FROM videos v "
+        f"LEFT JOIN video_metadata m ON m.video_id = v.id "
+        f"WHERE v.id != {ph} AND ({score_sql}) > 0 "
+        f"ORDER BY score DESC, v.view_count DESC, v.id DESC "
+        f"LIMIT {ph}",
+        tuple(params + [video_id] + params + [limit]),
+    )
+    return [dict(r) for r in rows]
+
+
+def get_videos_by_performer(
+    performer: str, page: int = 0, per_page: int = 8
+) -> tuple[list[dict], int]:
+    """All library videos featuring ``performer`` (exact-token match on cached metadata)."""
+    ph = "%s" if _using_pg else "?"
+    like_op = "ILIKE" if _using_pg else "LIKE"
+    pattern = f"%,{performer},%"
+    count_row = _fetchone(
+        f"SELECT COUNT(*) AS cnt FROM video_metadata m JOIN videos v ON v.id = m.video_id "
+        f"WHERE m.stashdb_performer {like_op} {ph}",
+        (pattern,),
+    )
+    total = count_row["cnt"] if count_row else 0
+    rows = _fetchall(
+        f"SELECT v.id, v.title, v.duration FROM video_metadata m JOIN videos v ON v.id = m.video_id "
+        f"WHERE m.stashdb_performer {like_op} {ph} "
+        f"ORDER BY v.view_count DESC, v.id DESC LIMIT {ph} OFFSET {ph}",
+        (pattern, per_page, page * per_page),
+    )
+    return [dict(r) for r in rows], total
+
+
+def performer_video_count(performer: str) -> int:
+    """How many library videos feature ``performer`` (for cast picker labels)."""
+    ph = "%s" if _using_pg else "?"
+    like_op = "ILIKE" if _using_pg else "LIKE"
+    row = _fetchone(
+        f"SELECT COUNT(*) AS cnt FROM video_metadata m WHERE m.stashdb_performer {like_op} {ph}",
+        (f"%,{performer},%",),
+    )
+    return row["cnt"] if row else 0
+
+
 # ── Favorites ─────────────────────────────────────────────────────────────
 
 def toggle_favorite(user_id: int, video_id: int) -> bool:

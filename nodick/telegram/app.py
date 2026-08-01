@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
 from typing import Optional
@@ -34,14 +35,18 @@ from nodick.db import (
     get_bot_setting,
     get_categories,
     get_favorites,
+    get_similar_videos,
     get_user_size_limit,
     get_video,
     get_video_metadata,
     get_videos_by_category,
+    get_videos_by_performer,
     increment_view,
     init_db,
     latest_import_job,
+    performer_video_count,
     random_video as db_random,
+    save_enrichment,
     search_videos,
     set_bot_setting,
     set_user_size_limit,
@@ -80,6 +85,7 @@ try:
     from nodick.metadata.stash import (  # noqa: F401
         get_match_threshold,
         process_video_caption,
+        process_video_caption_with_metadata,
         set_match_threshold,
     )
 
@@ -89,6 +95,9 @@ except ImportError as e:
 
     def process_video_caption(filename):  # type: ignore
         return None, "local"
+
+    def process_video_caption_with_metadata(filename):  # type: ignore
+        return None, "local", {}
 
     def set_match_threshold(value):  # type: ignore
         return 0.0
@@ -219,10 +228,16 @@ async def _enrich_and_send(
     if _stash_available and filename:
         try:
             loop = asyncio.get_event_loop()
-            caption_text, source = await asyncio.wait_for(
-                loop.run_in_executor(None, process_video_caption, filename),
+            caption_text, source, enrich_meta = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, process_video_caption_with_metadata, filename
+                ),
                 timeout=5.0,
             )
+            # Persist the enrichment so "More Like This" / Cast / tag search
+            # work from the cache instead of re-querying StashDB every view.
+            if source == "stashdb":
+                save_enrichment(video_id, source, enrich_meta)
         except asyncio.TimeoutError:
             log.warning("Stash enrichment timed out for: %s", filename[:50])
         except Exception as e:
@@ -239,10 +254,15 @@ async def _enrich_and_send(
     show_rename = bool(
         meta and meta.get("stashdb_confidence", 0) and meta["stashdb_confidence"] >= 0.9
     )
+    row_dict = dict(row)
+    row_tags = [t for t in (row_dict.get("tags") or "").split(",") if t]
+    cast = [p for p in (dict(meta).get("stashdb_performer") or "").split(",") if p] if meta else []
     markup = video_actions(
         video_id,
         show_rename=show_rename,
         feedback_enabled=_stash_available,
+        show_similar=bool(row_tags or cast),
+        performers=cast[:4],
     )
 
     # Multi-part navigation — if this video has siblings, add prev/next buttons
@@ -1170,6 +1190,124 @@ async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
 
+# ── Smart recommendations: More Like This + Cast ───────────────────────────
+
+
+def _b64(s: str) -> str:
+    # Standard base64 (not urlsafe): output has no '_' so it can't collide
+    # with the '_'-delimited callback_data format (perf_<enc> / perfpage_<enc>_<page>).
+    return base64.b64encode(s.encode("utf-8")).decode("ascii")
+
+
+def _unb64(s: str) -> str:
+    return base64.b64decode(s.encode("ascii")).decode("utf-8")
+
+
+async def similar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🎯 More Like This — videos sharing tags/performers with the current one."""
+    q = update.callback_query
+    try:
+        video_id = int(q.data.split("_", 1)[1])
+    except (ValueError, IndexError):
+        await q.answer("Hmm?", show_alert=True)
+        return
+    sims = get_similar_videos(video_id, limit=6)
+    if not sims:
+        await q.answer(
+            "No close matches yet — cache is still growing, keep watching 😏",
+            show_alert=True,
+        )
+        return
+    rows = []
+    for s in sims:
+        title = (s.get("title") or f"Video {s['id']}")[:42]
+        rows.append([InlineKeyboardButton(f"🎬 {title}", callback_data=f"play_{s['id']}")])
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
+    await q.answer()
+    await q.message.reply_text(
+        "🎯 *More like this*",
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def cast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """👤 Cast — pick a performer from the current video's cached metadata."""
+    q = update.callback_query
+    try:
+        video_id = int(q.data.split("_", 1)[1])
+    except (ValueError, IndexError):
+        await q.answer("Hmm?", show_alert=True)
+        return
+    meta = get_video_metadata(video_id)
+    performers = (
+        [p for p in (dict(meta).get("stashdb_performer") or "").split(",") if p]
+        if meta else []
+    )
+    if not performers:
+        await q.answer("No cast cached yet — keep watching 😏", show_alert=True)
+        return
+    rows = []
+    for name in performers[:6]:
+        try:
+            n = performer_video_count(name)
+        except Exception:
+            n = 0
+        enc = _b64(name)
+        # Telegram callback_data is capped at 64 bytes — skip names that
+        # would overflow ("perfpage_<enc>_<page>" is the longest form).
+        if len(f"perfpage_{enc}_0") > 64:
+            continue
+        label = f"👤 {name}" + (f" ({n})" if n else "")
+        rows.append([InlineKeyboardButton(label, callback_data=f"perf_{enc}")])
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
+    await q.answer()
+    await q.message.reply_text(
+        "👤 *Cast*",
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def performer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Filmography for a performer — paginated list of their videos."""
+    q = update.callback_query
+    data = q.data
+    try:
+        if data.startswith("perfpage_"):
+            _, enc, page_str = data.split("_", 2)
+            page = int(page_str)
+        else:
+            _, enc = data.split("_", 1)
+            page = 0
+        name = _unb64(enc)
+    except Exception:
+        await q.answer("Hmm?", show_alert=True)
+        return
+    rows, total = get_videos_by_performer(name, page=page, per_page=8)
+    if not rows:
+        await q.answer("Nothing here yet", show_alert=True)
+        return
+    buttons = []
+    for r in rows:
+        title = (r.get("title") or f"Video {r['id']}")[:42]
+        buttons.append([InlineKeyboardButton(f"🎬 {title}", callback_data=f"play_{r['id']}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️", callback_data=f"perfpage_{enc}_{page - 1}"))
+    nav.append(InlineKeyboardButton(f"📄 {page + 1}/{(total + 7) // 8}", callback_data="noop"))
+    if (page + 1) * 8 < total:
+        nav.append(InlineKeyboardButton("▶️", callback_data=f"perfpage_{enc}_{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
+    await q.answer()
+    await q.message.edit_text(
+        f"👤 {name} — {total} in your library",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
 async def _catchall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Catch any callback queries that didn't match a specific handler."""
     q = update.callback_query
@@ -1227,6 +1365,10 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_correct_callback, pattern="^correct_"))
     app.add_handler(CallbackQueryHandler(scanimport_callback, pattern="^scanimport_"))
     app.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
+    # Smart recommendations: More Like This + Cast + performer filmography
+    app.add_handler(CallbackQueryHandler(similar_callback, pattern="^similar_"))
+    app.add_handler(CallbackQueryHandler(cast_callback, pattern="^cast_"))
+    app.add_handler(CallbackQueryHandler(performer_callback, pattern="^perf"))
     # Catch-all for unhandled callback queries — log + answer so buttons don't freeze
     app.add_handler(CallbackQueryHandler(_catchall_callback))
 

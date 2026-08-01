@@ -43,6 +43,8 @@ def video_actions(
     show_rename: bool = False,
     show_duplicate: bool = False,
     feedback_enabled: bool = False,
+    show_similar: bool = False,
+    performers: list[str] | None = None,
 ) -> InlineKeyboardMarkup:
     rows = [
         [
@@ -50,6 +52,18 @@ def video_actions(
             InlineKeyboardButton("💦 Save", callback_data=f"fav_{video_id}"),
         ]
     ]
+    # Smart row: recommendations + cast — only when we have cached metadata
+    smart_row = []
+    if show_similar:
+        smart_row.append(
+            InlineKeyboardButton("🎯 More Like This", callback_data=f"similar_{video_id}")
+        )
+    if performers:
+        smart_row.append(
+            InlineKeyboardButton("👤 Cast", callback_data=f"cast_{video_id}")
+        )
+    if smart_row:
+        rows.append(smart_row)
     if _action_buttons_enabled():
         phase2_row = []
         if show_rename:
