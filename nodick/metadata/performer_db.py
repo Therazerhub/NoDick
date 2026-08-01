@@ -173,6 +173,11 @@ class PerformerDB:
             self._conn = sqlite3.connect(self.db_path)
             self._conn.row_factory = sqlite3.Row
             self._cursor = self._conn.cursor()
+            # Ensure schema exists — init_db() is idempotent (CREATE TABLE IF NOT
+            # EXISTS) and safe here: it calls _connect() again, which returns early
+            # since the connection is already set. Without this, every lookup fails
+            # with "no such table: performers" on a fresh/empty DB file.
+            self.init_db()
     
     def _close(self):
         """Close the database connection"""

@@ -185,6 +185,28 @@ async def _send_video_ref(
             raise
 
 
+def _caption_from_cache(
+    meta, row_tags: list[str], filename: str, row
+) -> Optional[str]:
+    """Build the enriched-style caption from cached metadata — instant, no network.
+
+    Respects user corrections (corrected_* win over stashdb_*). Returns None
+    when the cache has nothing usable (then live enrichment / fallback runs).
+    """
+    md = dict(meta)
+    title = md.get("corrected_title") or md.get("stashdb_title")
+    if not title:
+        return None
+    performers = (md.get("corrected_performer") or md.get("stashdb_performer") or "").strip(",")
+    studio = md.get("corrected_studio") or md.get("stashdb_studio") or ""
+    head = f"🌐 *{performers} — {title}*" if performers else f"🌐 *{title}*"
+    tag_line = " ".join(f"`#{t}`" for t in row_tags[:5])
+    body = f"━━━━━━━━━━━━━━\n{tag_line}"
+    if studio:
+        return f"{head}\n`{studio}`\n{body}"
+    return f"{head}\n{body}"
+
+
 async def _enrich_and_send(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -222,17 +244,32 @@ async def _enrich_and_send(
     increment_view(video_id)
     chat_id = update.effective_chat.id
 
-    # Try stash enrichment (with timeout — don't let slow API block all buttons)
+    meta = get_video_metadata(video_id)
+    row_dict = dict(row)
+    row_tags = [t for t in (row_dict.get("tags") or "").split(",") if t]
+    cast = [p for p in (dict(meta).get("stashdb_performer") or "").split(",") if p] if meta else []
+
+    # Caption strategy: cache-first (instant, zero StashDB calls), then live
+    # enrichment (uncached videos), then the clean local fallback.
     caption_text = None
     source = "local"
-    if _stash_available and filename:
+    cache_used = False
+
+    if meta:
+        cached = _caption_from_cache(meta, row_tags, filename, row)
+        if cached:
+            caption_text = cached
+            source = "cache"
+            cache_used = True
+
+    if not cache_used and _stash_available and filename:
         try:
             loop = asyncio.get_event_loop()
             caption_text, source, enrich_meta = await asyncio.wait_for(
                 loop.run_in_executor(
                     None, process_video_caption_with_metadata, filename
                 ),
-                timeout=5.0,
+                timeout=8.0,
             )
             # Persist the enrichment so "More Like This" / Cast / tag search
             # work from the cache instead of re-querying StashDB every view.
@@ -243,20 +280,16 @@ async def _enrich_and_send(
         except Exception as e:
             log.debug("Stash enrichment failed: %s", e)
 
-    if not caption_text or source == "local":
+    if not cache_used and (not caption_text or source == "local"):
         base = clean_title_for_display(filename)
         caption_text = (
             f"📁 *{base}*\n\n"
             f"⏱ {format_duration(row['duration'])} | 👁 {row['view_count'] + 1}"
         )
 
-    meta = get_video_metadata(video_id)
     show_rename = bool(
         meta and meta.get("stashdb_confidence", 0) and meta["stashdb_confidence"] >= 0.9
     )
-    row_dict = dict(row)
-    row_tags = [t for t in (row_dict.get("tags") or "").split(",") if t]
-    cast = [p for p in (dict(meta).get("stashdb_performer") or "").split(",") if p] if meta else []
     markup = video_actions(
         video_id,
         show_rename=show_rename,
