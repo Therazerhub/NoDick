@@ -517,7 +517,7 @@ def upsert_video_metadata(video_id: int, **fields) -> None:
 
     fields["last_updated"] = datetime.datetime.utcnow().isoformat()
     cols = ", ".join(fields)
-    vals = ", ".join(f"%" if _using_pg else "?" for _ in fields)
+    vals = ", ".join("%s" if _using_pg else "?" for _ in fields)
     placeholders = [f"{k} = %s" if _using_pg else f"{k} = ?" for k in fields]
     updates = ", ".join(placeholders)
 
