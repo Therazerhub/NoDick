@@ -275,9 +275,11 @@ async def _enrich_and_send(
             # work from the cache instead of re-querying StashDB every view.
             if source == "stashdb" and save_enrichment(video_id, source, enrich_meta):
                 # Freshly cached → refresh buttons NOW so 🎯/👤 appear on the
-                # first play, not the second one.
+                # first play, not the second one. Re-read BOTH the metadata and
+                # the tags from the DB (the in-memory row predates the cache write).
                 meta = get_video_metadata(video_id)
-                row_dict = dict(row)
+                fresh = get_video(video_id)
+                row_dict = dict(fresh) if fresh else {}
                 row_tags = [t for t in (row_dict.get("tags") or "").split(",") if t]
                 cast = [p for p in (dict(meta).get("stashdb_performer") or "").split(",") if p] if meta else []
         except asyncio.TimeoutError:
