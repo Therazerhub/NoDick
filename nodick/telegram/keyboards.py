@@ -74,7 +74,7 @@ def video_actions(
             phase2_row.append(
                 InlineKeyboardButton("⚠️ Dup", callback_data=f"dup_{video_id}")
             )
-        if feedback_enabled:
+        if feedback_enabled and False:  # Correct button disabled
             phase2_row.append(
                 InlineKeyboardButton("✏️ Correct", callback_data=f"correct_{video_id}")
             )
