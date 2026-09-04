@@ -4,6 +4,9 @@
 .github_deploy_key
 .github_deploy_key.pub
 
+# Local secrets — never committed
+.env
+
 # Runtime
 runtime/
 *.db

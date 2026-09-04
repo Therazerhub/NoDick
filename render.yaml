@@ -21,10 +21,9 @@ services:
         value: /data/nodick_user
       - key: STASHDB_API_KEY
         value: eyJhbG...R7CA
-      # PostgreSQL connection string — set this for persistent storage on Render.
+      # PostgreSQL connection string — set in Render dashboard, not here (secret).
       - key: DATABASE_URL
-        # External URL with SSL (works both inside and outside Render network)
-        value: postgresql://nodick_user:BFPUUHl5tgqapcdv79dWMFZnNGLd6yy2@dpg-d9j6bj3eo5us73au3et0-a.oregon-postgres.render.com/nodick?sslmode=require
+        sync: false
     disk:
       name: nodick-data
       mountPath: /data
