@@ -101,6 +101,13 @@ def import_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def scan_running_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Check status", callback_data="import_status")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu")],
+    ])
+
+
 def settings_keyboard() -> InlineKeyboardMarkup:
     enabled = _action_buttons_enabled()
     action_text = "✅ Action Buttons" if enabled else "❌ Action Buttons"

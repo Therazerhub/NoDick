@@ -63,6 +63,7 @@ from nodick.services.message_importer import (
 from nodick.telegram.keyboards import (
     back,
     import_menu as import_keyboard,
+    scan_running_keyboard,
     main_menu,
     part_nav_row,
     quality_keyboard,
@@ -810,17 +811,53 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def import_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Import button pressed — immediately kick off import_scan if we know the start ID,
+    otherwise prompt the user to forward the latest video from their channel."""
     q = update.callback_query
     if not _is_admin(update):
         await q.answer("Admin only", show_alert=True)
         return
     await q.answer()
-    await q.edit_message_text(
-        "🛰 NoDick Importer\n\n"
-        "Use /import <channel_id> or import the default configured channel.\n\n"
-        "Requires a logged-in Telethon user session (run `python -m nodick session-login` first).",
-        reply_markup=import_keyboard(),
-    )
+
+    from nodick.db import get_bot_setting
+    channel_str = get_bot_setting("scan_channel_id") or settings.default_import_channel
+    if not channel_str:
+        await q.edit_message_text(
+            "⚠️ No default channel set.\n\n"
+            "Use /setchannel <channel_id> to set one, then press Import again.",
+            reply_markup=back(),
+        )
+        return
+
+    try:
+        channel_id = int(channel_str)
+    except ValueError:
+        await q.edit_message_text(
+            f"⚠️ Invalid channel ID stored: {channel_str!r}\n"
+            "Use /setchannel <channel_id> to fix it.",
+            reply_markup=back(),
+        )
+        return
+
+    last_msg_id_str = get_bot_setting("scan_last_message_id")
+    if last_msg_id_str:
+        # We have a start ID from a previous scan — fire immediately
+        start_id = int(last_msg_id_str)
+        await q.edit_message_text(
+            f"🛰 Resuming scan of `{channel_id}` from message `{start_id}`...",
+            parse_mode="Markdown",
+            reply_markup=scan_running_keyboard(),
+        )
+        await _start_message_import(update, context, channel_id, start_id)
+    else:
+        # No start ID yet — ask user to forward the latest video
+        await q.edit_message_text(
+            f"🛰 Channel set: `{channel_id}`\n\n"
+            f"Forward the *latest* video from your channel to me and I'll start scanning automatically.\n\n"
+            f"_(Only needed once — I'll remember the position after that.)_",
+            parse_mode="Markdown",
+            reply_markup=back(),
+        )
 
 
 async def import_default(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -984,9 +1021,40 @@ async def _start_message_import(
         await status_msg.edit_text(f"❌ Scan failed: {e}")
 
 
+# ── Command: /setchannel ──────────────────────────────────────────────────
+
+
+async def setchannel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command: set the default scan channel.
+    Usage: /setchannel <channel_id>
+    Clears the saved start message ID so next Import starts fresh from a forward.
+    """
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    if not context.args:
+        current = get_bot_setting("scan_channel_id") or settings.default_import_channel or "not set"
+        await update.message.reply_text(
+            f"Current scan channel: `{current}`\n\n"
+            "Usage: /setchannel <channel_id>",
+            parse_mode="Markdown",
+        )
+        return
+    try:
+        channel_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ channel_id must be an integer (e.g., -1001234567890)")
+        return
+    set_bot_setting("scan_channel_id", str(channel_id))
+    set_bot_setting("scan_last_message_id", "")  # reset so user forwards again to pick start
+    await update.message.reply_text(
+        f"✅ Default scan channel set to `{channel_id}`.\n\n"
+        "Now forward the latest video from that channel to me and press 🛰 Import.",
+        parse_mode="Markdown",
+    )
+
+
 # ── Forwarded message handler ──────────────────────────────────────────────
-# When admin forwards the latest video from a DB channel, detect source
-# and offer to start import.
 
 
 async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1010,6 +1078,11 @@ async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     channel_id = origin.chat.id
     message_id = origin.message_id
+
+    # Persist channel + latest message ID so Import button can auto-resume next time
+    from nodick.db import set_bot_setting
+    set_bot_setting("scan_channel_id", str(channel_id))
+    set_bot_setting("scan_last_message_id", str(message_id))
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(
@@ -1380,6 +1453,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("import", import_command))
     app.add_handler(CommandHandler("import_status", import_status))
     app.add_handler(CommandHandler("import_scan", import_scan_command))
+    app.add_handler(CommandHandler("setchannel", setchannel_command))
 
     # ── Callbacks ──
     app.add_handler(CallbackQueryHandler(start, pattern="^menu$"))

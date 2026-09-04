@@ -186,6 +186,12 @@ def _init_pg():
             "INSERT INTO bot_settings (key, value) VALUES (%s, %s) ON CONFLICT DO NOTHING",
             ("action_buttons_enabled", "1"),
         )
+        # Seed scan_channel_id from env if not already set
+        if settings.default_import_channel:
+            cur.execute(
+                "INSERT INTO bot_settings (key, value) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                ("scan_channel_id", settings.default_import_channel),
+            )
         # Column migrations (check existence via information_schema)
         cur.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_name='videos'"
@@ -299,6 +305,12 @@ def _init_sqlite():
             "INSERT OR IGNORE INTO bot_settings (key, value) VALUES (?, ?)",
             ("action_buttons_enabled", "1"),
         )
+        # Seed scan_channel_id from env if not already set
+        if settings.default_import_channel:
+            conn.execute(
+                "INSERT OR IGNORE INTO bot_settings (key, value) VALUES (?, ?)",
+                ("scan_channel_id", settings.default_import_channel),
+            )
         existing = {row[1] for row in conn.execute("PRAGMA table_info(videos)")}
         migrations = {
             "source_chat_id": "ALTER TABLE videos ADD COLUMN source_chat_id INTEGER",
