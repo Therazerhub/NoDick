@@ -159,8 +159,9 @@ def _init_pg():
                 is_premium INTEGER DEFAULT 0,
                 premium_until TIMESTAMP,
                 quota_used INTEGER DEFAULT 0,
-                quota_limit INTEGER DEFAULT 10,
-                referred_by BIGINT
+                quota_limit INTEGER DEFAULT 5,
+                referred_by BIGINT,
+                quota_date TEXT
             )
         """)
         cur.execute("""
@@ -239,8 +240,9 @@ def _init_pg():
             "is_premium": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS is_premium INTEGER DEFAULT 0",
             "premium_until": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS premium_until TIMESTAMP",
             "quota_used": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_used INTEGER DEFAULT 0",
-            "quota_limit": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_limit INTEGER DEFAULT 10",
+            "quota_limit": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_limit INTEGER DEFAULT 5",
             "referred_by": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS referred_by BIGINT",
+            "quota_date": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_date TEXT",
         }
         for col, sql in us_migrations.items():
             if col not in us_existing:
@@ -248,6 +250,12 @@ def _init_pg():
                     cur.execute(sql)
                 except Exception:
                     pass
+        # Fix old limits and reset dates
+        try:
+            cur.execute("UPDATE user_settings SET quota_limit = 5 WHERE quota_limit = 10")
+            cur.execute("UPDATE user_settings SET quota_date = CURRENT_DATE::text WHERE quota_date IS NULL")
+        except Exception:
+            pass
 
 
 def _init_sqlite():
@@ -916,15 +924,29 @@ def get_user_quota(user_id: int) -> dict:
         return {'used': 0, 'limit': 999999, 'remaining': 999999, 'is_premium': True}
         
     row = _fetchone(
-        "SELECT quota_used, quota_limit FROM user_settings WHERE user_id = %s" if _using_pg else
-        "SELECT quota_used, quota_limit FROM user_settings WHERE user_id = ?",
+        "SELECT quota_used, quota_limit, quota_date FROM user_settings WHERE user_id = %s" if _using_pg else
+        "SELECT quota_used, quota_limit, quota_date FROM user_settings WHERE user_id = ?",
         (user_id,)
     )
     if not row:
-        return {'used': 0, 'limit': 10, 'remaining': 10, 'is_premium': False}
+        return {'used': 0, 'limit': 5, 'remaining': 5, 'is_premium': False}
         
     used = row['quota_used'] if _using_pg else row['quota_used']
     limit = row['quota_limit'] if _using_pg else row['quota_limit']
+    q_date = row['quota_date'] if _using_pg else row['quota_date']
+    
+    from datetime import datetime
+    today = datetime.utcnow().date().isoformat()
+    
+    # Lazy Daily Reset check
+    if str(q_date) != today:
+        ph = "%s" if _using_pg else "?"
+        _execute(
+            f"UPDATE user_settings SET quota_used = 0, quota_date = {ph} WHERE user_id = {ph}",
+            (today, user_id)
+        )
+        used = 0
+        
     return {
         'used': used,
         'limit': limit,
@@ -941,10 +963,13 @@ def increment_quota(user_id: int) -> bool:
     if quota['remaining'] <= 0:
         return False
         
+    from datetime import datetime
+    today = datetime.utcnow().date().isoformat()
+    
     ph = "%s" if _using_pg else "?"
     _execute(
-        f"UPDATE user_settings SET quota_used = quota_used + 1 WHERE user_id = {ph}",
-        (user_id,)
+        f"UPDATE user_settings SET quota_used = quota_used + 1, quota_date = {ph} WHERE user_id = {ph}",
+        (today, user_id)
     )
     return True
 
