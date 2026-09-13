@@ -125,19 +125,19 @@ except ImportError as e:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-WELCOME_MSG = """🖤 **NoDick** 🖤
+WELCOME_MSG = """𝕿𝖍𝖊 𝖁𝖆𝖚𝖑𝖙 𝖎𝖘 𝕺𝖕𝖊𝖓. 🖤
 
 ━━━━━━━━━━━━━━━━━━━━
 
-*Perfectly organized filth.*
+*Step inside. Everything is organized.* 
 
-⏳ _Videos vanish in 30 min… forward what you fancy before they ghost you_ 👻
+⏳ _Warning: Videos self-destruct in 30 minutes. Save what you want before the ghost protocol wipes them._ 👻
 
 **What are you waiting for?** 😈
 
 ━━━━━━━━━━━━━━━━━━━━
 
-⚡ Engineered by **@TheRazerhub** 🔥"""
+⚡ _Architected by_ [The Razer](tg://user?id=6001922744) 🔥"""
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
