@@ -701,8 +701,10 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = db_video_count()
         views = total_views()
         cats = category_count()
+        users = get_user_count()
         text = (
-            f"📊 NoDick Stats\n\n"
+            f"📊 *NoDick Stats*\n\n"
+            f"👥 Users: {users:,}\n"
             f"📹 Videos: {total:,}\n"
             f"👁 Views: {views:,}\n"
             f"📁 Categories: {cats:,}"
