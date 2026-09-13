@@ -25,7 +25,15 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
     # Account menu for ALL users
     rows.append([InlineKeyboardButton("👤 My Account", callback_data="my_account")])
     
-    if user_id == settings.admin_id:
+    extra = get_bot_setting("extra_admins", "")
+    is_extra = False
+    if extra and user_id is not None:
+        try:
+            is_extra = user_id in [int(x) for x in extra.split()]
+        except ValueError:
+            pass
+
+    if user_id == settings.admin_id or is_extra:
         # Add stats next to favorites for admin
         rows[2].append(InlineKeyboardButton("📊 Bot Stats", callback_data="stats"))
         rows.append(
@@ -155,6 +163,7 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 Logs Channel", callback_data="prompt_logschannel"),
             InlineKeyboardButton("🔒 Force Join", callback_data="prompt_forcejoin")
         ],
+        [InlineKeyboardButton("👥 Co-Admins", callback_data="prompt_coadmins")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
     ])
 

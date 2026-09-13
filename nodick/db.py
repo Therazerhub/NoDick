@@ -870,6 +870,13 @@ def set_user_size_limit(user_id: int, mb: Optional[int]) -> None:
 def is_user_premium(user_id: int) -> bool:
     if user_id == settings.admin_id:
         return True
+    extra = get_bot_setting("extra_admins", "")
+    if extra:
+        try:
+            if user_id in [int(x) for x in extra.split()]:
+                return True
+        except ValueError:
+            pass
     row = _fetchone(
         "SELECT is_premium, premium_until FROM user_settings WHERE user_id = %s" if _using_pg else
         "SELECT is_premium, premium_until FROM user_settings WHERE user_id = ?",

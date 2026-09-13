@@ -144,7 +144,19 @@ WELCOME_MSG = """🖤 **NoDick** 🖤
 
 
 def _is_admin(update: Update) -> bool:
-    return bool(update.effective_user and update.effective_user.id == settings.admin_id)
+    user_id = update.effective_user.id if update.effective_user else None
+    if not user_id:
+        return False
+    if user_id == settings.admin_id:
+        return True
+    from nodick.db import get_bot_setting
+    extra = get_bot_setting("extra_admins", "")
+    if extra:
+        try:
+            return user_id in [int(x) for x in extra.split()]
+        except ValueError:
+            pass
+    return False
 
 
 # ── Force Join check ──────────────────────────────────────────────────────
@@ -1041,6 +1053,7 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "refbonus": "Send me the new *Referral Bonus* amount (e.g. `5`):",
         "logschannel": "Send me the new *Logs Channel ID* (e.g. `-1001234567890`):",
         "forcejoin": "Send me the *Channel/Group IDs* separated by spaces (e.g. `-100123 -100456`):\n\n_(Send `clear` to disable Force Join)_",
+        "coadmins": "Send me the *Admin IDs* separated by spaces (e.g. `12345 67890`):\n\n_(Send `clear` to remove all extra admins)_",
     }
     
     await q.edit_message_text(
@@ -1557,6 +1570,26 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                 if failed:
                     msg += "\n\n⚠️ Failed:\n" + "\n".join(failed)
+        elif setting == "coadmins":
+            if text.lower() == "clear":
+                set_bot_setting("extra_admins", "")
+                msg = "✅ Extra admins cleared."
+            else:
+                ids = text.split()
+                valid = []
+                failed = []
+                for cid in ids:
+                    try:
+                        valid.append(str(int(cid)))
+                    except Exception:
+                        failed.append(cid)
+                if valid:
+                    set_bot_setting("extra_admins", " ".join(valid))
+                    msg = f"✅ Saved {len(valid)} extra admins."
+                else:
+                    msg = "❌ No valid IDs found."
+                if failed:
+                    msg += "\n\n⚠️ Invalid IDs skipped:\n" + " ".join(failed)
         
         await update.message.reply_text(msg, reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
         return
