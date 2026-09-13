@@ -137,13 +137,24 @@ def scan_running_keyboard() -> InlineKeyboardMarkup:
 def settings_keyboard() -> InlineKeyboardMarkup:
     enabled = _action_buttons_enabled()
     action_text = "✅ Action Buttons" if enabled else "❌ Action Buttons"
-    return InlineKeyboardMarkup(
+    
+    autodel_enabled = get_bot_setting("auto_delete_enabled", "1") == "1"
+    autodel_text = "👻 Auto-Delete: ON" if autodel_enabled else "👻 Auto-Delete: OFF"
+    
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(action_text, callback_data="toggle_action_buttons")],
+        [InlineKeyboardButton("🎬 Quality Limit", callback_data="quality")],
         [
-            [InlineKeyboardButton(action_text, callback_data="toggle_action_buttons")],
-            [InlineKeyboardButton("🎬 Quality", callback_data="quality")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
-        ]
-    )
+            InlineKeyboardButton(autodel_text, callback_data="toggle_autodelete"),
+            InlineKeyboardButton("⏳ Delete Timer", callback_data="prompt_autodelete_timer")
+        ],
+        [
+            InlineKeyboardButton("💰 Payment Info", callback_data="prompt_payment"),
+            InlineKeyboardButton("🎁 Ref Bonus", callback_data="prompt_refbonus")
+        ],
+        [InlineKeyboardButton("📋 Logs Channel", callback_data="prompt_logschannel")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
+    ])
 
 
 # Max file-size presets (MB). None = unlimited.

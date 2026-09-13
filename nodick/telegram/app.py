@@ -946,13 +946,38 @@ async def toggle_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if setting == "action_buttons":
         current = get_bot_setting("action_buttons_enabled", "1")
         set_bot_setting("action_buttons_enabled", "0" if current == "1" else "1")
-        await q.edit_message_text(
-            "⚙️ Settings toggled.", reply_markup=settings_keyboard()
-        )
+        await q.edit_message_text("⚙️ Settings toggled.", reply_markup=settings_keyboard())
+    elif setting == "autodelete":
+        current = get_bot_setting("auto_delete_enabled", "1")
+        set_bot_setting("auto_delete_enabled", "0" if current == "1" else "1")
+        await q.edit_message_text("⚙️ Settings toggled.", reply_markup=settings_keyboard())
 
 
 # ── Quality (max file size) filter ─────────────────────────────────────────
 
+
+
+async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(update):
+        return
+        
+    action = q.data.replace("prompt_", "")
+    context.user_data["waiting_for_setting"] = action
+    
+    prompts = {
+        "autodelete_timer": "Send me the new *Auto-Delete timer* in minutes (e.g. `30`):",
+        "payment": "Send me the new *Payment Info* text (supports UPI, links, etc.):",
+        "refbonus": "Send me the new *Referral Bonus* amount (e.g. `5`):",
+        "logschannel": "Send me the new *Logs Channel ID* (e.g. `-1001234567890`):",
+    }
+    
+    await q.edit_message_text(
+        f"⚙️ {prompts.get(action, 'Send new value:')}\n\n_(Send your answer down below, or send /cancel to abort)_",
+        reply_markup=back(),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 async def quality_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1401,6 +1426,40 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    
+    if text.lower() == "/cancel":
+        context.user_data.pop("waiting_for_search", None)
+        context.user_data.pop("waiting_for_correction", None)
+        context.user_data.pop("waiting_for_setting", None)
+        await update.message.reply_text("❌ Action cancelled.", reply_markup=main_menu(update.effective_user.id))
+        return
+
+    # Check if waiting for a setting update
+    setting = context.user_data.pop("waiting_for_setting", None)
+    if setting:
+        if setting == "autodelete_timer":
+            try:
+                n = int(text)
+                set_bot_setting("auto_delete_minutes", str(n))
+                msg = f"✅ Auto-delete timer set to {n} minutes."
+            except ValueError:
+                msg = "❌ Must be a number."
+        elif setting == "payment":
+            set_bot_setting("payment_info", text)
+            msg = "✅ Payment info updated."
+        elif setting == "refbonus":
+            try:
+                n = int(text)
+                set_bot_setting("referral_bonus", str(n))
+                msg = f"✅ Referral bonus set to +{n} watches."
+            except ValueError:
+                msg = "❌ Must be a number."
+        elif setting == "logschannel":
+            set_bot_setting("logs_channel_id", text)
+            msg = f"✅ Logs channel set to `{text}`."
+        
+        await update.message.reply_text(msg, reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
+        return
 
     # Check if waiting for search query
     if context.user_data.pop("waiting_for_search", False):
@@ -1826,6 +1885,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(stats, pattern="^stats$"))
     app.add_handler(CallbackQueryHandler(settings_command, pattern="^settings$"))
     app.add_handler(CallbackQueryHandler(toggle_setting, pattern="^toggle_"))
+    app.add_handler(CallbackQueryHandler(prompt_setting, pattern="^prompt_"))
     app.add_handler(CallbackQueryHandler(quality_menu, pattern="^quality$"))
     app.add_handler(CallbackQueryHandler(quality_set, pattern="^quality_\\d+$"))
     app.add_handler(CallbackQueryHandler(handle_rename_callback, pattern="^rename_"))
