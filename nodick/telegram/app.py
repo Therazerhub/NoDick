@@ -549,15 +549,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     markup = main_menu(user.id if user else None)
     
+    welcome_gif = get_bot_setting("welcome_gif", "")
+    
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
-        )
+        cmsg = update.callback_query.message
+        try:
+            if cmsg.video or cmsg.document or cmsg.animation or cmsg.photo:
+                await update.callback_query.edit_message_caption(caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.callback_query.edit_message_text(text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            pass
     else:
-        await update.message.reply_text(
-            WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
-        )
+        if welcome_gif:
+            try:
+                await update.message.reply_animation(animation=welcome_gif, caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await update.message.reply_text(text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text(
+                text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+            )
 
 
 # ── Command: /random ───────────────────────────────────────────────────────
@@ -1056,6 +1069,9 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "coadmins": "Send me the *Admin IDs* separated by spaces (e.g. `12345 67890`):\n\n_(Send `clear` to remove all extra admins)_",
         "grantpremium": "Send me the *User IDs* you want to grant Lifetime Premium to, separated by spaces (e.g. `12345 67890`):",
         "revokepremium": "Send me the *User IDs* you want to revoke Premium from, separated by spaces:",
+        "grantadmin": "Send me the *User IDs* to grant Admin rights to, separated by spaces:",
+        "revokeadmin": "Send me the *Admin IDs* to revoke Admin rights from, separated by spaces:",
+        "welcomegif": "Send a URL to a GIF or Video to serve as the Welcome Banner (e.g. a Tenor link):\n\n_(Send `clear` to disable)_",
         "broadcast": "Send the message you want to broadcast to ALL your bot users:\n\n_(Standard text and Telegram formatting allowed)_",
     }
     
@@ -1627,26 +1643,35 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.application.create_task(_run_bg_broadcast())
             msg = f"📡 Broadcast queued for {len(user_ids)} users! You'll get a notification in your Logs Channel when it finishes."
             
-        elif setting == "coadmins":
-            if text.lower() == "clear":
-                set_bot_setting("extra_admins", "")
-                msg = "✅ Extra admins cleared."
-            else:
-                ids = text.split()
-                valid = []
-                failed = []
-                for cid in ids:
-                    try:
-                        valid.append(str(int(cid)))
-                    except Exception:
-                        failed.append(cid)
-                if valid:
-                    set_bot_setting("extra_admins", " ".join(valid))
-                    msg = f"✅ Saved {len(valid)} extra admins."
+        elif setting == "grantadmin":
+            ids = text.split()
+            current = get_bot_setting("extra_admins", "").split()
+            added = 0
+            for cid in ids:
+                if cid.isdigit() and cid not in current:
+                    current.append(cid)
+                    added += 1
+            set_bot_setting("extra_admins", " ".join(current))
+            msg = f"✅ Granted Admin to {added} users."
+        elif setting == "revokeadmin":
+            ids = text.split()
+            current = get_bot_setting("extra_admins", "").split()
+            removed = 0
+            new_list = []
+            for cid in current:
+                if cid in ids:
+                    removed += 1
                 else:
-                    msg = "❌ No valid IDs found."
-                if failed:
-                    msg += "\n\n⚠️ Invalid IDs skipped:\n" + " ".join(failed)
+                    new_list.append(cid)
+            set_bot_setting("extra_admins", " ".join(new_list))
+            msg = f"✅ Revoked Admin from {removed} users."
+        elif setting == "welcomegif":
+            if text.lower() == "clear":
+                set_bot_setting("welcome_gif", "")
+                msg = "✅ Welcome GIF disabled."
+            else:
+                set_bot_setting("welcome_gif", text)
+                msg = "✅ Welcome GIF updated!"
         
         await update.message.reply_text(msg, reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
         return
@@ -2240,7 +2265,14 @@ async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Videos watched: {quota['used']}\n"
     )
     if not premium:
-        text += f"Remaining: {quota['remaining']}/{quota['limit']}\n"
+        total_blocks = 10
+        if quota['limit'] > 0:
+            filled = min(total_blocks, int(total_blocks * quota['remaining'] / quota['limit']))
+        else:
+            filled = total_blocks
+        empty = total_blocks - filled
+        bar = f"[{'▮' * filled}{'▯' * empty}]"
+        text += f"Daily Quota: `{bar}` {quota['remaining']}/{quota['limit']}\n"
     text += f"Referrals: {ref_count}\n"
     
     from nodick.telegram.keyboards import account_keyboard
@@ -2266,7 +2298,7 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    payment_info = get_bot_setting("payment_info", "Contact admin for payment details.")
+    payment_info = get_bot_setting("payment_info", f"Contact [Admin](tg://user?id={settings.admin_id}) for payment details.")
     text = (
         f"👑 *Premium Access*\n\n"
         f"🔓 Unlimited video watches\n"

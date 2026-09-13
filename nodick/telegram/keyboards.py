@@ -168,8 +168,12 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🚫 Revoke Prem", callback_data="prompt_revokepremium")
         ],
         [
-            InlineKeyboardButton("👥 Co-Admins", callback_data="prompt_coadmins"),
-            InlineKeyboardButton("📢 Broadcast", callback_data="prompt_broadcast")
+            InlineKeyboardButton("🛡️ Grant Admin", callback_data="prompt_grantadmin"),
+            InlineKeyboardButton("❌ Revoke Admin", callback_data="prompt_revokeadmin")
+        ],
+        [
+            InlineKeyboardButton("📢 Broadcast", callback_data="prompt_broadcast"),
+            InlineKeyboardButton("🖼️ Set GIF", callback_data="prompt_welcomegif")
         ],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
     ])
