@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import json
+from datetime import datetime, timedelta
 import re
 from typing import Optional
 
@@ -54,6 +56,17 @@ from nodick.db import (
     update_video_size,
     upsert_video,
     video_count as db_video_count,
+    is_user_premium,
+    get_user_quota,
+    increment_quota,
+    grant_premium,
+    revoke_premium,
+    list_premium_users,
+    record_referral,
+    get_referral_count,
+    get_all_user_ids,
+    user_exists,
+    get_user_count,
 )
 from nodick.services.importer import TelegramImporter
 from nodick.services.message_importer import (
@@ -69,6 +82,9 @@ from nodick.telegram.keyboards import (
     quality_keyboard,
     settings_keyboard,
     video_actions,
+    account_keyboard,
+    force_join_keyboard,
+    ad_button_keyboard,
 )
 from nodick.utils import (
     clean_title_for_display,
@@ -115,6 +131,8 @@ WELCOME_MSG = """🖤 **NoDick** 🖤
 
 *Perfectly organized filth.*
 
+⏳ _Videos vanish in 30 min… forward what you fancy before they ghost you_ 👻
+
 **What are you waiting for?** 😈
 
 ━━━━━━━━━━━━━━━━━━━━
@@ -128,6 +146,124 @@ WELCOME_MSG = """🖤 **NoDick** 🖤
 def _is_admin(update: Update) -> bool:
     return bool(update.effective_user and update.effective_user.id == settings.admin_id)
 
+
+# ── Force Join check ──────────────────────────────────────────────────────
+
+def _get_force_join_channels() -> list[dict]:
+    raw = get_bot_setting("force_join_channels", "[]")
+    try:
+        return json.loads(raw) or []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+async def _check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if _is_admin(update):
+        return False
+    channels = _get_force_join_channels()
+    if not channels:
+        return False
+    user_id = update.effective_user.id if update.effective_user else None
+    if not user_id:
+        return False
+    not_joined = []
+    for ch in channels:
+        try:
+            member = await context.bot.get_chat_member(ch["id"], user_id)
+            if member.status in ("left", "kicked"):
+                not_joined.append(ch)
+        except Exception:
+            not_joined.append(ch)
+    if not not_joined:
+        return False
+    text = (
+        "🔒 *Hold up, curious one…*\n\n"
+        "You need to join our channels first before I let you in. 😈\n\n"
+        "Join them all, then tap *✅ I have Joined*."
+    )
+    markup = force_join_keyboard(not_joined)
+    if update.callback_query:
+        await update.callback_query.answer()
+        try:
+            await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await update.callback_query.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    elif update.message:
+        await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    return True
+
+async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    user_id = update.effective_user.id if update.effective_user else None
+    if not user_id:
+        await q.answer("❌ Can't verify", show_alert=True)
+        return
+    channels = _get_force_join_channels()
+    not_joined = []
+    for ch in channels:
+        try:
+            member = await context.bot.get_chat_member(ch["id"], user_id)
+            if member.status in ("left", "kicked"):
+                not_joined.append(ch)
+        except Exception:
+            not_joined.append(ch)
+    if not_joined:
+        names = ", ".join(ch["name"] for ch in not_joined)
+        await q.answer(f"❌ Still not joined: {names}", show_alert=True)
+        return
+    await q.answer("✅ Verified! Welcome in… 😏")
+    markup = main_menu(user_id)
+    await q.edit_message_text(WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+
+# ── In-Bot Ad system ──────────────────────────────────────────────────────
+
+def _get_ad_config() -> dict | None:
+    raw = get_bot_setting("ad_config", "")
+    if not raw:
+        return None
+    try:
+        cfg = json.loads(raw)
+        if cfg and cfg.get("text") and cfg.get("button_text") and cfg.get("button_url"):
+            return cfg
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+def _get_ad_frequency() -> int:
+    raw = get_bot_setting("ad_frequency", "5")
+    try:
+        return max(1, int(raw))
+    except (ValueError, TypeError):
+        return 5
+
+async def _maybe_send_ad(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    count = context.user_data.get("video_count", 0) + 1
+    context.user_data["video_count"] = count
+    freq = _get_ad_frequency()
+    if count % freq != 0:
+        return
+    ad = _get_ad_config()
+    if not ad:
+        return
+    chat_id = update.effective_chat.id
+    try:
+        markup = ad_button_keyboard(ad["button_text"], ad["button_url"])
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📣 *Sponsored*\n\n{ad['text']}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=markup,
+        )
+    except Exception as e:
+        log.debug("Failed to send ad: %s", e)
+
+# ── Auto Delete ──────────────────────────────────────────────────────────
+
+async def _auto_delete_message(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data
+    try:
+        await context.bot.delete_message(chat_id=data["chat_id"], message_id=data["message_id"])
+    except Exception:
+        pass
 
 async def _send_video_ref(
     bot, chat_id: int, file_ref: str, caption: str, reply_markup=None
@@ -184,6 +320,34 @@ async def _send_video_ref(
             log.error("Failed to send video ref %s: %s", file_ref[:30], e)
             # Try to notify user if we have a callback query context
             raise
+
+    # For auto-delete, we need to return the message or message ID
+    if file_ref.startswith("user_ref:") or file_ref.startswith("channel_ref:"):
+        _, channel_id, message_id = file_ref.split(":", 2)
+        try:
+            msg_id = await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=int(channel_id),
+                message_id=int(message_id),
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup,
+            )
+            return msg_id
+        except Exception:
+            return None
+    else:
+        try:
+            msg = await bot.send_video(
+                chat_id=chat_id,
+                video=file_ref,
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup,
+            )
+            return msg
+        except Exception:
+            return None
 
 
 def _caption_from_cache(
@@ -304,6 +468,8 @@ async def _enrich_and_send(
         feedback_enabled=_stash_available,
         show_similar=bool(row_tags or cast),
         performers=cast[:4],
+        user_id=update.effective_user.id if update.effective_user else None,
+        is_admin=_is_admin(update),
     )
 
     # Multi-part navigation — if this video has siblings, add prev/next buttons
@@ -315,10 +481,26 @@ async def _enrich_and_send(
         markup = InlineKeyboardMarkup(buttons)
 
     log.info("_enrich_and_send: calling _send_video_ref for video_id=%s", video_id)
-    await _send_video_ref(
+    sent_msg = await _send_video_ref(
         context.bot, chat_id, row["file_id"], caption_text, markup
     )
     log.info("_enrich_and_send: _send_video_ref returned successfully")
+    
+    await _maybe_send_ad(update, context)
+    
+    if get_bot_setting("auto_delete_enabled", "1") == "1" and not _is_admin(update):
+        delete_mins = int(get_bot_setting("auto_delete_minutes", "30"))
+        if sent_msg:
+            msg_id = getattr(sent_msg, 'message_id', sent_msg)
+            if hasattr(msg_id, "message_id"):
+                msg_id = msg_id.message_id
+            if isinstance(msg_id, int):
+                context.job_queue.run_once(
+                    _auto_delete_message,
+                    when=delete_mins * 60,
+                    data={"chat_id": chat_id, "message_id": msg_id},
+                    name=f"autodel_{chat_id}_{msg_id}",
+                )
 
     # Lazy size backfill — fire-and-forget when we don't know the size yet
     if not row.get("file_size"):
@@ -335,7 +517,24 @@ def _duration(seconds: Optional[int]) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user:
+        is_new = not user_exists(user.id)
         ensure_user_exists(user.id)
+        if is_new:
+            if context.args and context.args[0].startswith("ref_"):
+                try:
+                    referrer_id = int(context.args[0].replace("ref_", ""))
+                    bonus = int(get_bot_setting("referral_bonus", "5"))
+                    if record_referral(referrer_id, user.id, bonus):
+                        await _log_event(context, f"✅ New referral: `{user.id}` joined via `{referrer_id}`")
+                except ValueError:
+                    pass
+            username = f"@{user.username}" if user.username else "No username"
+            full_name = filter(None, [user.first_name, user.last_name])
+            name_str = " ".join(full_name) or "Unknown"
+            await _log_event(context, f"👤 *New User*\nID: `{user.id}`\nUsername: {username}\nName: {name_str}")
+            
+    if await _check_force_join(update, context):
+        return
     markup = main_menu(user.id if user else None)
     
     if update.callback_query:
@@ -378,6 +577,8 @@ async def random_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _check_force_join(update, context):
+        return
     if not context.args:
         await update.message.reply_text("Usage: /search <keyword>")
         return
@@ -386,6 +587,8 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def search_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _check_force_join(update, context):
+        return
     await update.callback_query.answer()
     context.user_data["waiting_for_search"] = True
     await update.callback_query.edit_message_text(
@@ -455,6 +658,8 @@ async def search_page_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        if await _check_force_join(update, context):
+            return
         if update.callback_query:
             await update.callback_query.answer()
         total = db_video_count()
@@ -488,6 +693,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _check_force_join(update, context):
+        return
     if update.callback_query:
         await update.callback_query.answer()
     cats = get_categories()
@@ -575,6 +782,8 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _check_force_join(update, context):
+        return
     q = update.callback_query
     user_id = update.effective_user.id
     await q.answer()
@@ -1257,6 +1466,134 @@ async def _handle_correction_text(
     await update.message.reply_text("✅ Corrected! 💕", reply_markup=main_menu(update.effective_user.id))
 
 
+
+
+# ── Feature Admin Commands ───────────────────────────────────────────────
+
+async def forcejoin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command: manage forced join channels."""
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "📢 *Force Join Channels*\n\n"
+            "Usage:\n"
+            "`/forcejoin add <channel_id> <name> <url>`\n"
+            "`/forcejoin remove <channel_id>`\n"
+            "`/forcejoin list`\n\n"
+            "Example:\n"
+            "`/forcejoin add -1001234567890 MyChannel https://t.me/mychannel`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    sub = context.args[0].lower()
+    channels = _get_force_join_channels()
+    if sub == "list":
+        if not channels:
+            await update.message.reply_text("📢 No forced join channels configured.")
+            return
+        lines = ["📢 *Force Join Channels:*\n"]
+        for ch in channels:
+            lines.append(f"• `{ch['id']}` — [{ch['name']}]({ch['url']})")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    elif sub == "add":
+        if len(context.args) < 4:
+            await update.message.reply_text(
+                "Usage: `/forcejoin add <channel_id> <name> <url>`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        try:
+            ch_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("❌ channel_id must be an integer.")
+            return
+        ch_name = context.args[2]
+        ch_url = context.args[3]
+        if any(c["id"] == ch_id for c in channels):
+            await update.message.reply_text(f"⚠️ Channel `{ch_id}` already in list.", parse_mode=ParseMode.MARKDOWN)
+            return
+        channels.append({"id": ch_id, "name": ch_name, "url": ch_url})
+        set_bot_setting("force_join_channels", json.dumps(channels))
+        await update.message.reply_text(
+            f"✅ Added force join channel: *{ch_name}* (`{ch_id}`)",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    elif sub == "remove":
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: `/forcejoin remove <channel_id>`", parse_mode=ParseMode.MARKDOWN)
+            return
+        try:
+            ch_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("❌ channel_id must be an integer.")
+            return
+        before = len(channels)
+        channels = [c for c in channels if c["id"] != ch_id]
+        if len(channels) == before:
+            await update.message.reply_text(f"⚠️ Channel `{ch_id}` not found.", parse_mode=ParseMode.MARKDOWN)
+            return
+        set_bot_setting("force_join_channels", json.dumps(channels))
+        await update.message.reply_text(
+            f"✅ Removed channel `{ch_id}` from force join list.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await update.message.reply_text("❌ Unknown subcommand. Use `add`, `remove`, or `list`.", parse_mode=ParseMode.MARKDOWN)
+
+async def setad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return
+    raw = update.message.text
+    _, _, payload = raw.partition(" ")
+    payload = payload.strip()
+    if not payload or "|" not in payload:
+        await update.message.reply_text(
+            "📣 *Set In-Bot Ad*\n\n"
+            "Usage: `/setad text | button_text | button_url`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    parts = [p.strip() for p in payload.split("|")]
+    if len(parts) != 3:
+        await update.message.reply_text("❌ Need exactly 3 pipe-separated values: `text | button_text | button_url`", parse_mode=ParseMode.MARKDOWN)
+        return
+    ad_text, button_text, button_url = parts
+    config = {"text": ad_text, "button_text": button_text, "button_url": button_url}
+    set_bot_setting("ad_config", json.dumps(config))
+    freq = _get_ad_frequency()
+    await update.message.reply_text(
+        f"✅ Ad configured!\n\n📝 Text: {ad_text}\n🔘 Button: [{button_text}]({button_url})\n📊 Frequency: every {freq} videos",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+async def clearad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return
+    set_bot_setting("ad_config", "")
+    await update.message.reply_text("✅ Ad cleared. No ads will be shown.")
+
+async def adfreq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update): return
+    if not context.args:
+        current = _get_ad_frequency()
+        await update.message.reply_text(
+            f"📊 Current ad frequency: every *{current}* videos\n\nUsage: `/adfreq <number>`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    try:
+        n = int(context.args[0])
+        if n < 1:
+            await update.message.reply_text("❌ Frequency must be at least 1.")
+            return
+    except ValueError:
+        await update.message.reply_text("❌ Provide a number.")
+        return
+    set_bot_setting("ad_frequency", str(n))
+    await update.message.reply_text(f"✅ Ad frequency set to every *{n}* videos.", parse_mode=ParseMode.MARKDOWN)
+    
 # ── Rename callback ────────────────────────────────────────────────────────
 
 
@@ -1442,6 +1779,22 @@ def build_application() -> Application:
 
     # ── Commands ──
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("forcejoin", forcejoin_command))
+    app.add_handler(CommandHandler("setad", setad_command))
+    app.add_handler(CommandHandler("clearad", clearad_command))
+    app.add_handler(CommandHandler("adfreq", adfreq_command))
+    app.add_handler(CommandHandler("grant", grant_command))
+    app.add_handler(CommandHandler("revoke", revoke_command))
+    app.add_handler(CommandHandler("premiumlist", premiumlist_command))
+    app.add_handler(CommandHandler("setpayment", setpayment_command))
+    app.add_handler(CommandHandler("setrefbonus", setrefbonus_command))
+    app.add_handler(CommandHandler("setlogs", setlogs_command))
+    app.add_handler(CommandHandler("setautodelete", setautodelete_command))
+    app.add_handler(CommandHandler("autodelete", autodelete_command))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("mystats", my_stats_callback))
+    app.add_handler(CommandHandler("refer", refer_callback))
+    app.add_handler(CommandHandler("premium", get_premium_callback))
     app.add_handler(CommandHandler("random", random_video))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("stats", stats))
@@ -1483,6 +1836,13 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(similar_callback, pattern="^similar_"))
     app.add_handler(CallbackQueryHandler(cast_callback, pattern="^cast_"))
     app.add_handler(CallbackQueryHandler(performer_callback, pattern="^perf"))
+    # Monetization callbacks
+    app.add_handler(CallbackQueryHandler(verify_join_callback, pattern="^verify_join$"))
+    app.add_handler(CallbackQueryHandler(my_account, pattern="^my_account$"))
+    app.add_handler(CallbackQueryHandler(my_stats_callback, pattern="^my_stats$"))
+    app.add_handler(CallbackQueryHandler(refer_callback, pattern="^refer$"))
+    app.add_handler(CallbackQueryHandler(get_premium_callback, pattern="^get_premium$"))
+
     # Catch-all for unhandled callback queries — log + answer so buttons don't freeze
     app.add_handler(CallbackQueryHandler(_catchall_callback))
 

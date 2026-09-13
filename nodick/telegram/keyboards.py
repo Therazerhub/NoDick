@@ -5,7 +5,7 @@ from __future__ import annotations
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
-from nodick.db import get_bot_setting, get_user_size_limit
+from nodick.db import get_bot_setting, get_user_size_limit, is_user_premium, get_user_quota
 
 
 def _action_buttons_enabled() -> bool:
@@ -24,6 +24,10 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📊 Stats", callback_data="stats"),
         ],
     ]
+    
+    # Account menu for ALL users
+    rows.append([InlineKeyboardButton("👤 My Account", callback_data="my_account")])
+    
     if user_id == settings.admin_id:
         rows.append(
             [
@@ -38,6 +42,17 @@ def back() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu")]])
 
 
+def account_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton("📊 My Stats", callback_data="my_stats")],
+        [InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer")],
+    ]
+    if not is_user_premium(user_id):
+        rows.append([InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")])
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
+
+
 def video_actions(
     video_id: int,
     show_rename: bool = False,
@@ -45,10 +60,19 @@ def video_actions(
     feedback_enabled: bool = False,
     show_similar: bool = False,
     performers: list[str] | None = None,
+    user_id: int | None = None,
+    is_admin: bool = False,
 ) -> InlineKeyboardMarkup:
+    
+    more_text = "🔥 More"
+    if user_id is not None and not is_admin and not is_user_premium(user_id):
+        quota = get_user_quota(user_id)
+        if quota.get("remaining", 0) < 999999: # Not lifetime
+            more_text = f"🔥 More ({quota['remaining']} left)"
+            
     rows = [
         [
-            InlineKeyboardButton("🔥 More", callback_data="random"),
+            InlineKeyboardButton(more_text, callback_data="random"),
             InlineKeyboardButton("💦 Save", callback_data=f"fav_{video_id}"),
         ]
     ]
@@ -64,7 +88,9 @@ def video_actions(
         )
     if smart_row:
         rows.append(smart_row)
-    if _action_buttons_enabled():
+        
+    # Only admins get action buttons like Rename/Dup now
+    if _action_buttons_enabled() and is_admin:
         phase2_row = []
         if show_rename:
             phase2_row.append(
@@ -139,6 +165,22 @@ def quality_keyboard(user_id: int) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(f"{label}{mark}", callback_data=cb)])
     rows.append([InlineKeyboardButton("🔙 Back", callback_data="settings")])
     return InlineKeyboardMarkup(rows)
+
+
+def force_join_keyboard(channels: list[dict]) -> InlineKeyboardMarkup:
+    """Build inline keyboard with join buttons for each channel + verify button."""
+    rows = []
+    for ch in channels:
+        rows.append([InlineKeyboardButton(f"📢 Join {ch['name']}", url=ch["url"])])
+    rows.append([InlineKeyboardButton("✅ I have Joined", callback_data="verify_join")])
+    return InlineKeyboardMarkup(rows)
+
+
+def ad_button_keyboard(button_text: str, button_url: str) -> InlineKeyboardMarkup:
+    """Build inline keyboard for a sponsored ad message."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(button_text, url=button_url)],
+    ])
 
 
 def part_nav_row(siblings: list[dict], video_id: int) -> list[InlineKeyboardButton] | None:

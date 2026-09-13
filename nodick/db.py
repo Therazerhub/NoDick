@@ -155,7 +155,12 @@ def _init_pg():
                 max_size_mb INTEGER,
                 is_admin INTEGER DEFAULT 0,
                 first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_premium INTEGER DEFAULT 0,
+                premium_until TIMESTAMP,
+                quota_used INTEGER DEFAULT 0,
+                quota_limit INTEGER DEFAULT 10,
+                referred_by BIGINT
             )
         """)
         cur.execute("""
@@ -178,6 +183,15 @@ def _init_pg():
                 started_at TIMESTAMP,
                 finished_at TIMESTAMP,
                 created_by BIGINT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS referrals (
+                id SERIAL PRIMARY KEY,
+                referrer_id BIGINT NOT NULL,
+                referred_id BIGINT NOT NULL UNIQUE,
+                bonus_granted INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -219,11 +233,21 @@ def _init_pg():
             "SELECT column_name FROM information_schema.columns WHERE table_name='user_settings'"
         )
         us_existing = {row[0] for row in cur.fetchall()}
-        if "max_size_mb" not in us_existing:
-            try:
-                cur.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS max_size_mb INTEGER")
-            except Exception:
-                pass
+        
+        us_migrations = {
+            "max_size_mb": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS max_size_mb INTEGER",
+            "is_premium": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS is_premium INTEGER DEFAULT 0",
+            "premium_until": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS premium_until TIMESTAMP",
+            "quota_used": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_used INTEGER DEFAULT 0",
+            "quota_limit": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_limit INTEGER DEFAULT 10",
+            "referred_by": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS referred_by BIGINT",
+        }
+        for col, sql in us_migrations.items():
+            if col not in us_existing:
+                try:
+                    cur.execute(sql)
+                except Exception:
+                    pass
 
 
 def _init_sqlite():
@@ -839,6 +863,161 @@ def set_user_size_limit(user_id: int, mb: Optional[int]) -> None:
             (user_id, mb),
         )
 
+
+
+# ── Premium & Core Users ───────────────────────────────────────────────────
+
+def is_user_premium(user_id: int) -> bool:
+    if user_id == settings.admin_id:
+        return True
+    row = _fetchone(
+        "SELECT is_premium, premium_until FROM user_settings WHERE user_id = %s" if _using_pg else
+        "SELECT is_premium, premium_until FROM user_settings WHERE user_id = ?",
+        (user_id,)
+    )
+    if not row:
+        return False
+    
+    is_prem = row['is_premium'] if _using_pg else row['is_premium']
+    until = row['premium_until'] if _using_pg else row['premium_until']
+    
+    if not is_prem:
+        return False
+        
+    if not until:
+        return True # Lifetime
+    
+    from datetime import datetime
+    
+    if isinstance(until, str):
+        try:
+            until = datetime.fromisoformat(until.replace('Z', '+00:00'))
+        except Exception:
+            return True
+            
+    if until.tzinfo is not None:
+        now = datetime.now().astimezone()
+    else:
+        now = datetime.now()
+        
+    return until > now
+
+
+def get_user_quota(user_id: int) -> dict:
+    premium = is_user_premium(user_id)
+    if premium:
+        return {'used': 0, 'limit': 999999, 'remaining': 999999, 'is_premium': True}
+        
+    row = _fetchone(
+        "SELECT quota_used, quota_limit FROM user_settings WHERE user_id = %s" if _using_pg else
+        "SELECT quota_used, quota_limit FROM user_settings WHERE user_id = ?",
+        (user_id,)
+    )
+    if not row:
+        return {'used': 0, 'limit': 10, 'remaining': 10, 'is_premium': False}
+        
+    used = row['quota_used'] if _using_pg else row['quota_used']
+    limit = row['quota_limit'] if _using_pg else row['quota_limit']
+    return {
+        'used': used,
+        'limit': limit,
+        'remaining': max(0, limit - used),
+        'is_premium': False
+    }
+
+
+def increment_quota(user_id: int) -> bool:
+    if is_user_premium(user_id):
+        return True
+        
+    quota = get_user_quota(user_id)
+    if quota['remaining'] <= 0:
+        return False
+        
+    ph = "%s" if _using_pg else "?"
+    _execute(
+        f"UPDATE user_settings SET quota_used = quota_used + 1 WHERE user_id = {ph}",
+        (user_id,)
+    )
+    return True
+
+
+def grant_premium(user_id: int, days: int | None = None) -> None:
+    ensure_user_exists(user_id)
+    ph = "%s" if _using_pg else "?"
+    if days is None:
+        _execute(
+            f"UPDATE user_settings SET is_premium = 1, premium_until = NULL WHERE user_id = {ph}",
+            (user_id,)
+        )
+    else:
+        if _using_pg:
+            _execute(
+                "UPDATE user_settings SET is_premium = 1, premium_until = CURRENT_TIMESTAMP + (%s || ' days')::interval WHERE user_id = %s",
+                (days, user_id)
+            )
+        else:
+            _execute(
+                f"UPDATE user_settings SET is_premium = 1, premium_until = datetime('now', '+{days} days') WHERE user_id = ?",
+                (user_id,)
+            )
+
+def revoke_premium(user_id: int) -> None:
+    ph = "%s" if _using_pg else "?"
+    _execute(
+        f"UPDATE user_settings SET is_premium = 0, premium_until = NULL WHERE user_id = {ph}",
+        (user_id,)
+    )
+
+def list_premium_users() -> list[dict]:
+    rows = _fetchall(
+        "SELECT user_id, premium_until, first_seen FROM user_settings WHERE is_premium = 1"
+    )
+    return [dict(r) for r in rows]
+
+def record_referral(referrer_id: int, referred_id: int, bonus: int = 5) -> bool:
+    if referrer_id == referred_id:
+        return False
+    ph = "%s" if _using_pg else "?"
+    try:
+        if _using_pg:
+            _execute(
+                "INSERT INTO referrals (referrer_id, referred_id, bonus_granted) VALUES (%s, %s, %s)",
+                (referrer_id, referred_id, bonus)
+            )
+        else:
+            _execute(
+                "INSERT INTO referrals (referrer_id, referred_id, bonus_granted) VALUES (?, ?, ?)",
+                (referrer_id, referred_id, bonus)
+            )
+        
+        _execute(
+            f"UPDATE user_settings SET quota_limit = quota_limit + {ph} WHERE user_id = {ph}",
+            (bonus, referrer_id)
+        )
+        _execute(
+            f"UPDATE user_settings SET referred_by = {ph} WHERE user_id = {ph}",
+            (referrer_id, referred_id)
+        )
+        return True
+    except Exception:
+         return False
+
+def get_referral_count(user_id: int) -> int:
+    ph = "%s" if _using_pg else "?"
+    row = _fetchone(f"SELECT COUNT(*) as c FROM referrals WHERE referrer_id = {ph}", (user_id,))
+    return row['c'] if _using_pg and row else (row[0] if row else 0)
+
+def get_all_user_ids() -> list[int]:
+    rows = _fetchall("SELECT user_id FROM user_settings")
+    if _using_pg:
+        return [r['user_id'] for r in rows]
+    return [r['user_id'] for r in rows]
+
+def user_exists(user_id: int) -> bool:
+    ph = "%s" if _using_pg else "?"
+    row = _fetchone(f"SELECT 1 FROM user_settings WHERE user_id = {ph}", (user_id,))
+    return bool(row)
 
 # ── Import Jobs ────────────────────────────────────────────────────────────
 
