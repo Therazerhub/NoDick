@@ -2331,7 +2331,7 @@ async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.answer()
     payment_info = get_bot_setting("payment_info", "")
     if not payment_info or payment_info == "Contact admin for payment details." or payment_info == "Not set":
-        payment_info = f"UPI: `razerx@ptaxis`\n\n_Send the payment screenshot directly to_ 💎 [Admin](tg://user?id={settings.admin_id}) _and I'll activate your premium within minutes._ 🔥"
+        payment_info = f"UPI: `razerx@ptaxis`\n\n_Send the screenshot directly to_ 💎 @TheRazerhub _and I'll activate it within minutes._ 🔥"
     
     text = (
         f"👑 *Premium Access*\n\n"
