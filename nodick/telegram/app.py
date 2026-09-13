@@ -1824,6 +1824,263 @@ async def _catchall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await q.answer("⏳ This button isn't wired up yet", show_alert=False)
 
 
+
+
+# ── Premium Admin Commands ────────────────────────────────────────────────
+
+async def grant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/grant <user_id> [days]`\n"
+            "No days = lifetime premium",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ user_id must be a number.")
+        return
+    days = None
+    if len(context.args) > 1:
+        try:
+            days = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("❌ days must be a number.")
+            return
+    grant_premium(target_id, days)
+    duration = f"{days} days" if days else "lifetime"
+    await update.message.reply_text(
+        f"✅ Premium granted to `{target_id}` ({duration})",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    await _log_event(context, f"👑 Premium granted to `{target_id}` ({duration})")
+
+async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: `/revoke <user_id>`", parse_mode=ParseMode.MARKDOWN)
+        return
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ user_id must be a number.")
+        return
+    revoke_premium(target_id)
+    await update.message.reply_text(f"✅ Premium revoked from `{target_id}`", parse_mode=ParseMode.MARKDOWN)
+    await _log_event(context, f"❌ Premium revoked from `{target_id}`")
+
+async def premiumlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    users = list_premium_users()
+    if not users:
+        await update.message.reply_text("No premium users.")
+        return
+    lines = ["👑 *Premium Users:*\n"]
+    for u in users:
+        until = u.get('premium_until') or 'Lifetime'
+        lines.append(f"• `{u['user_id']}` — until {until}")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def setpayment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    raw = update.message.text
+    _, _, payload = raw.partition(" ")
+    if not payload.strip():
+        current = get_bot_setting("payment_info", "Not set")
+        await update.message.reply_text(f"Current payment info:\n{current}\n\nUsage: /setpayment <text>")
+        return
+    set_bot_setting("payment_info", payload.strip())
+    await update.message.reply_text("✅ Payment info updated.")
+
+async def setrefbonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    if not context.args:
+        current = get_bot_setting("referral_bonus", "5")
+        await update.message.reply_text(f"Current referral bonus: {current}\n\nUsage: /setrefbonus <number>")
+        return
+    try:
+        n = int(context.args[0])
+        if n < 1:
+            await update.message.reply_text("❌ Must be at least 1.")
+            return
+    except ValueError:
+        await update.message.reply_text("❌ Provide a number.")
+        return
+    set_bot_setting("referral_bonus", str(n))
+    await update.message.reply_text(f"✅ Referral bonus set to +{n} watches per referral.")
+
+async def setlogs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    if not context.args:
+        current = get_bot_setting("logs_channel_id", "") or str(settings.logs_channel_id) or "Not set"
+        await update.message.reply_text(f"Current logs channel: `{current}`\n\nUsage: `/setlogs <channel_id>`", parse_mode=ParseMode.MARKDOWN)
+        return
+    try:
+        ch_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Must be an integer.")
+        return
+    set_bot_setting("logs_channel_id", str(ch_id))
+    await update.message.reply_text(f"✅ Logs channel set to `{ch_id}`", parse_mode=ParseMode.MARKDOWN)
+
+async def setautodelete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    if not context.args:
+        mins = get_bot_setting("auto_delete_minutes", "30")
+        enabled = get_bot_setting("auto_delete_enabled", "1")
+        status = "ON" if enabled == "1" else "OFF"
+        await update.message.reply_text(f"Auto-delete: {status}, timer: {mins} min\n\nUsage: /setautodelete <minutes>")
+        return
+    try:
+        n = int(context.args[0])
+        if n < 1:
+            await update.message.reply_text("❌ Must be at least 1 minute.")
+            return
+    except ValueError:
+        await update.message.reply_text("❌ Provide a number.")
+        return
+    set_bot_setting("auto_delete_minutes", str(n))
+    await update.message.reply_text(f"✅ Auto-delete timer set to {n} minutes.")
+
+async def autodelete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    if not context.args:
+        enabled = get_bot_setting("auto_delete_enabled", "1")
+        status = "ON" if enabled == "1" else "OFF"
+        await update.message.reply_text(f"Auto-delete is: {status}\n\nUsage: /autodelete on|off")
+        return
+    val = context.args[0].lower()
+    if val in ("on", "1", "yes"):
+        set_bot_setting("auto_delete_enabled", "1")
+        await update.message.reply_text("✅ Auto-delete enabled.")
+    elif val in ("off", "0", "no"):
+        set_bot_setting("auto_delete_enabled", "0")
+        await update.message.reply_text("✅ Auto-delete disabled.")
+    else:
+        await update.message.reply_text("Usage: /autodelete on|off")
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        return
+    raw = update.message.text
+    _, _, payload = raw.partition(" ")
+    if not payload.strip():
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+    user_ids = get_all_user_ids()
+    sent, failed = 0, 0
+    status_msg = await update.message.reply_text(f"📡 Broadcasting to {len(user_ids)} users...")
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(chat_id=uid, text=payload, parse_mode=ParseMode.MARKDOWN)
+            sent += 1
+        except Exception:
+            failed += 1
+        if (sent + failed) % 25 == 0:
+            try:
+                await status_msg.edit_text(f"📡 Broadcasting... {sent + failed}/{len(user_ids)}")
+            except Exception:
+                pass
+    await status_msg.edit_text(f"📡 Broadcast complete!\n✅ Sent: {sent}\n❌ Failed: {failed}")
+
+async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user_id = update.effective_user.id
+    from nodick.telegram.keyboards import account_keyboard
+    await q.edit_message_text(
+        "👤 *My Account*",
+        reply_markup=account_keyboard(user_id),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user_id = update.effective_user.id
+    quota = get_user_quota(user_id)
+    ref_count = get_referral_count(user_id)
+    premium = is_user_premium(user_id)
+    
+    status = "👑 Premium" if premium else "🆓 Free"
+    text = (
+        f"📊 *Your Stats*\n\n"
+        f"Status: {status}\n"
+        f"Videos watched: {quota['used']}\n"
+    )
+    if not premium:
+        text += f"Remaining: {quota['remaining']}/{quota['limit']}\n"
+    text += f"Referrals: {ref_count}\n"
+    
+    from nodick.telegram.keyboards import account_keyboard
+    await q.edit_message_text(text, reply_markup=account_keyboard(user_id), parse_mode=ParseMode.MARKDOWN)
+
+async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user_id = update.effective_user.id
+    ref_count = get_referral_count(user_id)
+    bot_username = (await context.bot.get_me()).username
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    bonus = int(get_bot_setting("referral_bonus", "5"))
+    text = (
+        f"🔗 *Refer & Earn*\n\n"
+        f"Share your link and earn *+{bonus} free watches* per friend!\n\n"
+        f"Your link:\n`{ref_link}`\n\n"
+        f"👥 Friends referred: *{ref_count}*\n\n"
+        f"_They join, you earn. Simple._ 😏"
+    )
+    await q.edit_message_text(text, reply_markup=back(), parse_mode=ParseMode.MARKDOWN)
+
+async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    payment_info = get_bot_setting("payment_info", "Contact admin for payment details.")
+    text = (
+        f"👑 *Premium Access*\n\n"
+        f"🔓 Unlimited video watches\n"
+        f"⚡ No restrictions\n"
+        f"💰 Just ₹50 — one-time\n\n"
+        f"*How to pay:*\n"
+        f"{payment_info}\n\n"
+        f"_After payment, admin will activate your premium within minutes._ 🔥"
+    )
+    await q.edit_message_text(text, reply_markup=back(), parse_mode=ParseMode.MARKDOWN)
+
+async def _log_event(context: ContextTypes.DEFAULT_TYPE, message: str):
+    ch_id = get_bot_setting("logs_channel_id", "") or str(settings.logs_channel_id)
+    if not ch_id or ch_id == "0":
+        return
+    try:
+        await context.bot.send_message(
+            chat_id=int(ch_id),
+            text=f"📋 {message}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as e:
+        log.debug("Failed to send log: %s", e)
+
+
 # ── Application builder ────────────────────────────────────────────────────
 
 
