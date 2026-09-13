@@ -539,6 +539,23 @@ async def _enrich_and_send(
 def _duration(seconds: Optional[int]) -> str:
     return format_duration(seconds)
 
+async def _replace_with_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, markup=None):
+    """Safely replace the current message with text, deleting it if it is media (GIF/Video)."""
+    q = update.callback_query
+    msg = q.message
+    if msg.video or msg.document or msg.animation or msg.photo:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        return await context.bot.send_message(
+            chat_id=msg.chat_id, text=text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        return await q.edit_message_text(
+            text=text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+        )
+
 
 # ── Command: /start ────────────────────────────────────────────────────────
 
@@ -664,9 +681,7 @@ async def search_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.callback_query.answer()
     context.user_data["waiting_for_search"] = True
-    await update.callback_query.edit_message_text(
-        "🔍 Send me a search keyword:", reply_markup=back()
-    )
+    await _replace_with_text(update, context, "🔍 Send me a search keyword:", back())
 
 
 async def _show_search(
@@ -713,7 +728,7 @@ async def _show_search(
         markup = InlineKeyboardMarkup(buttons)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=markup)
+        await _replace_with_text(update, context, text, markup)
     else:
         await update.message.reply_text(text, reply_markup=markup)
 
@@ -754,7 +769,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.callback_query:
             log.info("Stats: editing message %s for user %s",
                      update.callback_query.message.message_id, update.effective_user.id)
-            await update.callback_query.edit_message_text(text, reply_markup=back())
+            await _replace_with_text(update, context, text, back())
             log.info("Stats: edit successful")
         else:
             await update.message.reply_text(
@@ -796,9 +811,7 @@ async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"📁 *Categories* — {len(cats)} total"
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(
-            text, reply_markup=markup, parse_mode="Markdown"
-        )
+        await _replace_with_text(update, context, text, markup)
     else:
         await update.message.reply_text(text, reply_markup=markup)
 
@@ -822,7 +835,7 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     limit = get_user_size_limit(update.effective_user.id) if update.effective_user else None
     rows, total = get_videos_by_category(category, page=page, per_page=per_page, max_size_mb=limit)
     if not rows:
-        await q.edit_message_text("🥺 No videos.", reply_markup=back())
+        await _replace_with_text(update, context, "🥺 No videos.", back())
         return
 
     buttons = [
@@ -852,10 +865,7 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons.append([InlineKeyboardButton("🔙 Categories", callback_data="categories")])
     buttons.append([InlineKeyboardButton("🔙 Menu", callback_data="menu")])
 
-    await q.edit_message_text(
-        f"📁 {category} — {len(rows)} of {total}",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+    await _replace_with_text(update, context, f"📁 {category} — {len(rows)} of {total}", InlineKeyboardMarkup(buttons))
 
 
 # ── Command: /favorites ────────────────────────────────────────────────────
@@ -878,10 +888,7 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE):
         max_size_mb=get_user_size_limit(user_id),
     )
     if not rows:
-        await q.edit_message_text(
-            "⭐ No favorites yet. Tap 💦 on a video to save it.",
-            reply_markup=main_menu(user_id),
-        )
+        await _replace_with_text(update, context, "⭐ No favorites yet. Tap 💦 on a video to save it.", main_menu(user_id))
         return
 
     buttons = [
@@ -906,10 +913,7 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append(nav)
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
 
-    await q.edit_message_text(
-        f"⭐ Favorites — {len(rows)} of {total}",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+    await _replace_with_text(update, context, f"⭐ Favorites — {len(rows)} of {total}", InlineKeyboardMarkup(buttons))
 
 
 async def add_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1039,9 +1043,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            "⚙️ *Settings*", reply_markup=settings_keyboard(), parse_mode="Markdown"
-        )
+        await _replace_with_text(update, context, "⚙️ *Settings*", settings_keyboard())
     else:
         await update.message.reply_text("⚙️ Settings", reply_markup=settings_keyboard())
 
@@ -1092,11 +1094,7 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "broadcast": "Send the message you want to broadcast to ALL your bot users:\n\n_(Standard text and Telegram formatting allowed)_",
     }
     
-    await q.edit_message_text(
-        f"⚙️ {prompts.get(action, 'Send new value:')}\n\n_(Send your answer down below, or send /cancel to abort)_",
-        reply_markup=back(),
-        parse_mode=ParseMode.MARKDOWN
-    )
+    await _replace_with_text(update, context, f"⚙️ {prompts.get(action, 'Send new value:')}\n\n_(Send your answer down below, or send /cancel to abort)_", back())
 
 async def quality_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1175,42 +1173,24 @@ async def import_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     from nodick.db import get_bot_setting
     channel_str = get_bot_setting("scan_channel_id") or settings.default_import_channel
     if not channel_str:
-        await q.edit_message_text(
-            "⚠️ No default channel set.\n\n"
-            "Use /setchannel <channel_id> to set one, then press Import again.",
-            reply_markup=back(),
-        )
+        await _replace_with_text(update, context, "⚠️ No default channel set.\n\nUse /setchannel <channel_id> to set one, then press Import again.", back())
         return
 
     try:
         channel_id = int(channel_str)
     except ValueError:
-        await q.edit_message_text(
-            f"⚠️ Invalid channel ID stored: {channel_str!r}\n"
-            "Use /setchannel <channel_id> to fix it.",
-            reply_markup=back(),
-        )
+        await _replace_with_text(update, context, f"⚠️ Invalid channel ID stored: {channel_str!r}\nUse /setchannel <channel_id> to fix it.", back())
         return
 
     last_msg_id_str = get_bot_setting("scan_last_message_id")
     if last_msg_id_str:
         # We have a start ID from a previous scan — fire immediately
         start_id = int(last_msg_id_str)
-        await q.edit_message_text(
-            f"🛰 Resuming scan of `{channel_id}` from message `{start_id}`...",
-            parse_mode="Markdown",
-            reply_markup=scan_running_keyboard(),
-        )
+        await _replace_with_text(update, context, f"🛰 Resuming scan of `{channel_id}` from message `{start_id}`...", scan_running_keyboard())
         await _start_message_import(update, context, channel_id, start_id)
     else:
         # No start ID yet — ask user to forward the latest video
-        await q.edit_message_text(
-            f"🛰 Channel set: `{channel_id}`\n\n"
-            f"Forward the *latest* video from your channel to me and I'll start scanning automatically.\n\n"
-            f"_(Only needed once — I'll remember the position after that.)_",
-            parse_mode="Markdown",
-            reply_markup=back(),
-        )
+        await _replace_with_text(update, context, f"🛰 Channel set: `{channel_id}`\n\nForward the *latest* video from your channel to me and I'll start scanning automatically.\n\n_(Only needed once — I'll remember the position after that.)_", back())
 
 
 async def import_default(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1278,7 +1258,7 @@ async def import_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     )
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=import_keyboard())
+        await _replace_with_text(update, context, text, import_keyboard())
     else:
         await update.message.reply_text(text)
 
@@ -2261,11 +2241,7 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     user_id = update.effective_user.id
     from nodick.telegram.keyboards import account_keyboard
-    await q.edit_message_text(
-        "👤 *My Account*",
-        reply_markup=account_keyboard(user_id),
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    await _replace_with_text(update, context, "👤 *My Account*", account_keyboard(user_id))
 
 async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -2293,7 +2269,7 @@ async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"Referrals: {ref_count}\n"
     
     from nodick.telegram.keyboards import account_keyboard
-    await q.edit_message_text(text, reply_markup=account_keyboard(user_id), parse_mode=ParseMode.MARKDOWN)
+    await _replace_with_text(update, context, text, account_keyboard(user_id))
 
 async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -2310,7 +2286,7 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👥 Friends referred: *{ref_count}*\n\n"
         f"_They join, you earn. Simple._ 😏"
     )
-    await q.edit_message_text(text, reply_markup=back(), parse_mode=ParseMode.MARKDOWN)
+    await _replace_with_text(update, context, text, back())
 
 async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -2325,7 +2301,7 @@ async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         f"{payment_info}\n\n"
         f"_After payment, admin will activate your premium within minutes._ 🔥"
     )
-    await q.edit_message_text(text, reply_markup=back(), parse_mode=ParseMode.MARKDOWN)
+    await _replace_with_text(update, context, text, back())
 
 async def _log_event(context: ContextTypes.DEFAULT_TYPE, message: str):
     ch_id = get_bot_setting("logs_channel_id", "") or str(settings.logs_channel_id)
