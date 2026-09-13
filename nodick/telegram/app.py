@@ -1663,7 +1663,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         elif setting == "grantadmin":
             ids = text.split()
-            current = get_bot_setting("extra_admins", "").split()
+            current = (get_bot_setting("extra_admins", "") or "").split()
             added = 0
             for cid in ids:
                 if cid.isdigit() and cid not in current:
@@ -1673,7 +1673,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = f"✅ Granted Admin to {added} users."
         elif setting == "revokeadmin":
             ids = text.split()
-            current = get_bot_setting("extra_admins", "").split()
+            current = (get_bot_setting("extra_admins", "") or "").split()
             removed = 0
             new_list = []
             for cid in current:
@@ -2312,7 +2312,9 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    payment_info = get_bot_setting("payment_info", f"Contact [Admin](tg://user?id={settings.admin_id}) for payment details.")
+    payment_info = get_bot_setting("payment_info", "")
+    if not payment_info or payment_info == "Contact admin for payment details." or payment_info == "Not set":
+        payment_info = f"Contact 💎 [Admin](tg://user?id={settings.admin_id}) for payment details."
     text = (
         f"👑 *Premium Access*\n\n"
         f"🔓 Unlimited video watches\n"
