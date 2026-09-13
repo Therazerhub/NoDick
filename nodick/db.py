@@ -1019,6 +1019,10 @@ def user_exists(user_id: int) -> bool:
     row = _fetchone(f"SELECT 1 FROM user_settings WHERE user_id = {ph}", (user_id,))
     return bool(row)
 
+def get_user_count() -> int:
+    row = _fetchone("SELECT COUNT(*) as c FROM user_settings")
+    return row['c'] if _using_pg and row else (row[0] if row else 0)
+
 # ── Import Jobs ────────────────────────────────────────────────────────────
 
 def create_import_job(channel_id: str, created_by: int) -> int:
