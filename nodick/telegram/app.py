@@ -129,11 +129,11 @@ WELCOME_MSG = """𝕿𝖍𝖊 𝖁𝖆𝖚𝖑𝖙 𝖎𝖘 𝕺𝖕𝖊𝖓. �
 
 ━━━━━━━━━━━━━━━━━━━━
 
-*Step inside. Everything is organized.* 
+*Your personal, zero-clutter stash of premium organized filth.* 💦
 
-⏳ _Warning: Videos self-destruct in 30 minutes. Save what you want before the ghost protocol wipes them._ 👻
+⏳ _Warning: Videos self-destruct in 30 minutes. Save what makes you ache before the ghost protocol wipes them._ 👻
 
-**What are you waiting for?** 😈
+**Dive in. I know you want to.** 😈
 
 ━━━━━━━━━━━━━━━━━━━━
 
@@ -1108,7 +1108,7 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "logschannel": "Send me the new *Logs Channel ID* (e.g. `-1001234567890`):",
         "forcejoin": "Send me the *Channel/Group IDs* separated by spaces (e.g. `-100123 -100456`):\n\n_(Send `clear` to disable Force Join)_",
         "coadmins": "Send me the *Admin IDs* separated by spaces (e.g. `12345 67890`):\n\n_(Send `clear` to remove all extra admins)_",
-        "grantpremium": "Send me the *User IDs* you want to grant Lifetime Premium to, separated by spaces (e.g. `12345 67890`):",
+        "grantpremium": "Send me the *User IDs* you want to grant 30-Day Premium to, separated by spaces (e.g. `12345 67890`):",
         "revokepremium": "Send me the *User IDs* you want to revoke Premium from, separated by spaces:",
         "grantadmin": "Send me the *User IDs* to grant Admin rights to, separated by spaces:",
         "revokeadmin": "Send me the *Admin IDs* to revoke Admin rights from, separated by spaces:",
@@ -1627,11 +1627,11 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for cid_str in ids:
                 try:
                     cid = int(cid_str)
-                    grant_premium(cid, None)
+                    grant_premium(cid, 30)
                     try:
                         promo_text = (
                             "👑 *PREMIUM UNLOCKED* 👑\n\n"
-                            "The admin has personally upgraded your account to *Lifetime Premium*! 🔥\n\n"
+                            "The admin has personally upgraded your account to *Premium for 30 Days*! 🔥\n\n"
                             "🔓 Unlimited Surprise Me accesses\n"
                             "🚫 Zero restrictions natively unlocked\n\n"
                             "Go wild. 😏"
@@ -1642,7 +1642,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     count += 1
                 except Exception:
                     failed += 1
-            msg = f"✅ Granted Lifetime Premium to {count} users.\n(Failed/Skipped: {failed})"
+            msg = f"✅ Granted 30 Days Premium to {count} users.\n(Failed/Skipped: {failed})"
         elif setting == "revokepremium":
             ids = text.split()
             count, failed = 0, 0
@@ -2337,7 +2337,7 @@ async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         f"👑 *Premium Access*\n\n"
         f"🔓 Unlimited video watches\n"
         f"⚡ No restrictions\n"
-        f"💰 Just ₹50 — one-time\n\n"
+        f"💰 Just ₹50 — 1 Month\n\n"
         f"*How to pay:*\n"
         f"{payment_info}"
     )

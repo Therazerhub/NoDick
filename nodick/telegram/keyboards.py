@@ -22,8 +22,14 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⭐ Favorites", callback_data="favorites")],
     ]
     
-    # Account menu for ALL users
-    rows.append([InlineKeyboardButton("👤 My Account", callback_data="my_account")])
+    # Account/Premium menu for ALL users
+    if user_id is not None and not is_user_premium(user_id):
+        rows.append([
+            InlineKeyboardButton("👤 My Account", callback_data="my_account"),
+            InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")
+        ])
+    else:
+        rows.append([InlineKeyboardButton("👤 My Account", callback_data="my_account")])
     
     extra = get_bot_setting("extra_admins", "")
     is_extra = False
