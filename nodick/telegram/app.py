@@ -552,6 +552,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def random_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _check_force_join(update, context):
+        return
+        
+    if not _is_admin(update) and not is_user_premium(update.effective_user.id):
+        if not increment_quota(update.effective_user.id):
+            quota = get_user_quota(update.effective_user.id)
+            text = (
+                "🚫 *You've used all your free watches!*\n\n"
+                f"📊 Used: {quota['used']}/{quota['limit']}\n\n"
+                "💡 *Get more:*\n"
+                "🔗 Refer friends to earn +5 each\n"
+                "👑 Or grab Premium for unlimited access\n"
+            )
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer")],
+                [InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")],
+                [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+            ])
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            return
+
     # Don't pre-answer — let _enrich_and_send handle it (or error handler on failure)
     limit = get_user_size_limit(update.effective_user.id) if update.effective_user else None
     row = db_random(limit)
@@ -845,6 +870,31 @@ async def add_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _check_force_join(update, context):
+        return
+        
+    if not _is_admin(update) and not is_user_premium(update.effective_user.id):
+        if not increment_quota(update.effective_user.id):
+            quota = get_user_quota(update.effective_user.id)
+            text = (
+                "🚫 *You've used all your free watches!*\n\n"
+                f"📊 Used: {quota['used']}/{quota['limit']}\n\n"
+                "💡 *Get more:*\n"
+                "🔗 Refer friends to earn +5 each\n"
+                "👑 Or grab Premium for unlimited access\n"
+            )
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer")],
+                [InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")],
+                [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+            ])
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            return
+
     q = update.callback_query
     await q.answer("Loading...")
     video_id = int(q.data.split("_", 1)[1])
@@ -971,6 +1021,7 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "payment": "Send me the new *Payment Info* text (supports UPI, links, etc.):",
         "refbonus": "Send me the new *Referral Bonus* amount (e.g. `5`):",
         "logschannel": "Send me the new *Logs Channel ID* (e.g. `-1001234567890`):",
+        "forcejoin": "Send me the *Channel/Group IDs* separated by spaces (e.g. `-100123 -100456`):\n\n_(Send `clear` to disable Force Join)_",
     }
     
     await q.edit_message_text(
@@ -1457,6 +1508,36 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif setting == "logschannel":
             set_bot_setting("logs_channel_id", text)
             msg = f"✅ Logs channel set to `{text}`."
+        elif setting == "forcejoin":
+            if text.lower() == "clear":
+                set_bot_setting("force_join_channels", "[]")
+                msg = "✅ Force Join disabled."
+            else:
+                ids = text.split()
+                channels = []
+                failed = []
+                for cid in ids:
+                    try:
+                        chat_id = int(cid)
+                        # Fetch chat automatically
+                        chat = await context.bot.get_chat(chat_id)
+                        url = chat.invite_link
+                        if not url:
+                            url = await context.bot.export_chat_invite_link(chat_id)
+                        channels.append({"id": chat_id, "name": chat.title or str(chat_id), "url": url})
+                    except Exception as e:
+                        failed.append(f"`{cid}`: {str(e)}")
+                
+                if channels:
+                    import json
+                    from nodick.db import get_bot_setting
+                    set_bot_setting("force_join_channels", json.dumps(channels))
+                    msg = f"✅ Saved {len(channels)} channels for Force Join."
+                else:
+                    msg = "❌ No valid channels found.\nMake sure the bot is an admin in those channels to generate invite links."
+                    
+                if failed:
+                    msg += "\n\n⚠️ Failed:\n" + "\n".join(failed)
         
         await update.message.reply_text(msg, reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
         return

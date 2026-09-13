@@ -149,10 +149,13 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("⏳ Delete Timer", callback_data="prompt_autodelete_timer")
         ],
         [
-            InlineKeyboardButton("💰 Payment Info", callback_data="prompt_payment"),
+            InlineKeyboardButton("💰 Payment", callback_data="prompt_payment"),
             InlineKeyboardButton("🎁 Ref Bonus", callback_data="prompt_refbonus")
         ],
-        [InlineKeyboardButton("📋 Logs Channel", callback_data="prompt_logschannel")],
+        [
+            InlineKeyboardButton("📋 Logs Channel", callback_data="prompt_logschannel"),
+            InlineKeyboardButton("🔒 Force Join", callback_data="prompt_forcejoin")
+        ],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
     ])
 
