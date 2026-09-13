@@ -19,16 +19,15 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔍 Search", callback_data="search_menu"),
             InlineKeyboardButton("📁 Categories", callback_data="categories"),
         ],
-        [
-            InlineKeyboardButton("⭐ Favorites", callback_data="favorites"),
-            InlineKeyboardButton("📊 Stats", callback_data="stats"),
-        ],
+        [InlineKeyboardButton("⭐ Favorites", callback_data="favorites")],
     ]
     
     # Account menu for ALL users
     rows.append([InlineKeyboardButton("👤 My Account", callback_data="my_account")])
     
     if user_id == settings.admin_id:
+        # Add stats next to favorites for admin
+        rows[2].append(InlineKeyboardButton("📊 Bot Stats", callback_data="stats"))
         rows.append(
             [
                 InlineKeyboardButton("🛰 Import", callback_data="import_menu"),

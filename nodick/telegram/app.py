@@ -689,6 +689,11 @@ async def search_page_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        if not _is_admin(update):
+            if update.callback_query:
+                await update.callback_query.answer("❌ Admin only.", show_alert=True)
+            return
+            
         if await _check_force_join(update, context):
             return
         if update.callback_query:
