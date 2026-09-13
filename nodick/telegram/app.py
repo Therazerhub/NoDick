@@ -1054,6 +1054,9 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "logschannel": "Send me the new *Logs Channel ID* (e.g. `-1001234567890`):",
         "forcejoin": "Send me the *Channel/Group IDs* separated by spaces (e.g. `-100123 -100456`):\n\n_(Send `clear` to disable Force Join)_",
         "coadmins": "Send me the *Admin IDs* separated by spaces (e.g. `12345 67890`):\n\n_(Send `clear` to remove all extra admins)_",
+        "grantpremium": "Send me the *User IDs* you want to grant Lifetime Premium to, separated by spaces (e.g. `12345 67890`):",
+        "revokepremium": "Send me the *User IDs* you want to revoke Premium from, separated by spaces:",
+        "broadcast": "Send the message you want to broadcast to ALL your bot users:\n\n_(Standard text and Telegram formatting allowed)_",
     }
     
     await q.edit_message_text(
@@ -1570,6 +1573,48 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                 if failed:
                     msg += "\n\n⚠️ Failed:\n" + "\n".join(failed)
+        elif setting == "grantpremium":
+            ids = text.split()
+            count, failed = 0, 0
+            for cid in ids:
+                try:
+                    grant_premium(int(cid), None)
+                    count += 1
+                except Exception:
+                    failed += 1
+            msg = f"✅ Granted Lifetime Premium to {count} users.\n(Failed/Skipped: {failed})"
+        elif setting == "revokepremium":
+            ids = text.split()
+            count, failed = 0, 0
+            for cid in ids:
+                try:
+                    revoke_premium(int(cid))
+                    count += 1
+                except Exception:
+                    failed += 1
+            msg = f"✅ Revoked Premium from {count} users.\n(Failed/Skipped: {failed})"
+        elif setting == "broadcast":
+            user_ids = get_all_user_ids()
+            
+            async def _run_bg_broadcast():
+                sent, dropped = 0, 0
+                for uid in user_ids:
+                    try:
+                        await context.bot.send_message(chat_id=uid, text=text, parse_mode=ParseMode.MARKDOWN)
+                        sent += 1
+                    except Exception:
+                        dropped += 1
+                    await asyncio.sleep(0.04) # Flood protection
+                # Log completion to logs channel
+                ch_id = get_bot_setting("logs_channel_id", "")
+                if ch_id:
+                    try:
+                        await context.bot.send_message(chat_id=int(ch_id), text=f"📡 Broadcast Complete!\n✅ Sent: {sent}\n❌ Failed: {dropped}")
+                    except: pass
+            
+            context.application.create_task(_run_bg_broadcast())
+            msg = f"📡 Broadcast queued for {len(user_ids)} users! You'll get a notification in your Logs Channel when it finishes."
+            
         elif setting == "coadmins":
             if text.lower() == "clear":
                 set_bot_setting("extra_admins", "")

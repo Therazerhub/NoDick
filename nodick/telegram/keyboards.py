@@ -163,7 +163,14 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 Logs Channel", callback_data="prompt_logschannel"),
             InlineKeyboardButton("🔒 Force Join", callback_data="prompt_forcejoin")
         ],
-        [InlineKeyboardButton("👥 Co-Admins", callback_data="prompt_coadmins")],
+        [
+            InlineKeyboardButton("👑 Grant Prem", callback_data="prompt_grantpremium"),
+            InlineKeyboardButton("🚫 Revoke Prem", callback_data="prompt_revokepremium")
+        ],
+        [
+            InlineKeyboardButton("👥 Co-Admins", callback_data="prompt_coadmins"),
+            InlineKeyboardButton("📢 Broadcast", callback_data="prompt_broadcast")
+        ],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
     ])
 
