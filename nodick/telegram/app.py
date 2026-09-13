@@ -588,6 +588,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
         cmsg = update.callback_query.message
+        
+        # If there's a GIF configured but the current message IS NOT media, we must switch to it.
+        if welcome_gif and not (cmsg.video or cmsg.document or cmsg.animation or cmsg.photo):
+            try:
+                await cmsg.delete()
+            except Exception:
+                pass
+            return await context.bot.send_animation(
+                chat_id=cmsg.chat_id, animation=welcome_gif, caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+            )
+
+        # If there's NO GIF configured but the current message IS media, we must delete it and switch to text.
+        if not welcome_gif and (cmsg.video or cmsg.document or cmsg.animation or cmsg.photo):
+            try:
+                await cmsg.delete()
+            except Exception:
+                pass
+            return await context.bot.send_message(
+                chat_id=cmsg.chat_id, text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+            )
+            
         try:
             if cmsg.video or cmsg.document or cmsg.animation or cmsg.photo:
                 await update.callback_query.edit_message_caption(caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
