@@ -156,8 +156,12 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("⏳ Delete Timer", callback_data="prompt_autodelete_timer")
         ],
         [
-            InlineKeyboardButton("💰 Payment", callback_data="prompt_payment"),
-            InlineKeyboardButton("🎁 Ref Bonus", callback_data="prompt_refbonus")
+            InlineKeyboardButton("💰 Pay Text", callback_data="prompt_payment"),
+            InlineKeyboardButton("📸 Pay QR", callback_data="prompt_paymentqr")
+        ],
+        [
+            InlineKeyboardButton("🎁 Ref Bonus", callback_data="prompt_refbonus"),
+            InlineKeyboardButton("🖼️ Set GIF", callback_data="prompt_welcomegif")
         ],
         [
             InlineKeyboardButton("📋 Logs Channel", callback_data="prompt_logschannel"),
@@ -172,8 +176,7 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("❌ Revoke Admin", callback_data="prompt_revokeadmin")
         ],
         [
-            InlineKeyboardButton("📢 Broadcast", callback_data="prompt_broadcast"),
-            InlineKeyboardButton("🖼️ Set GIF", callback_data="prompt_welcomegif")
+            InlineKeyboardButton("📢 Broadcast", callback_data="prompt_broadcast")
         ],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
     ])

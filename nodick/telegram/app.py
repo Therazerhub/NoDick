@@ -1103,6 +1103,7 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompts = {
         "autodelete_timer": "Send me the new *Auto-Delete timer* in minutes (e.g. `30`):",
         "payment": "Send me the new *Payment Info* text (supports UPI, links, etc.):",
+        "paymentqr": "Send me a *Photo* of your QR code:\n\n_(Send `clear` to remove an existing QR)_",
         "refbonus": "Send me the new *Referral Bonus* amount (e.g. `5`):",
         "logschannel": "Send me the new *Logs Channel ID* (e.g. `-1001234567890`):",
         "forcejoin": "Send me the *Channel/Group IDs* separated by spaces (e.g. `-100123 -100456`):\n\n_(Send `clear` to disable Force Join)_",
@@ -1545,7 +1546,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+    msg = update.message
+    text = msg.text or msg.caption or ""
+    text = text.strip()
     
     if text.lower() == "/cancel":
         context.user_data.pop("waiting_for_search", None)
@@ -1557,6 +1560,17 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if waiting for a setting update
     setting = context.user_data.pop("waiting_for_setting", None)
     if setting:
+        if setting == "paymentqr":
+            if msg.photo:
+                set_bot_setting("payment_qr", msg.photo[-1].file_id)
+                await msg.reply_text("✅ Payment QR Code updated!", reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
+            elif text.lower() == "clear":
+                set_bot_setting("payment_qr", "")
+                await msg.reply_text("✅ Payment QR removed.", reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
+            else:
+                await msg.reply_text("❌ Please send a PHOTO (image), or send `clear` to remove it.", reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
+            return
+
         if setting == "autodelete_timer":
             try:
                 n = int(text)
@@ -1692,6 +1706,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg = "✅ Welcome GIF updated!"
         
         await update.message.reply_text(msg, reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if not text:
         return
 
     # Check if waiting for search query
@@ -2314,17 +2331,32 @@ async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.answer()
     payment_info = get_bot_setting("payment_info", "")
     if not payment_info or payment_info == "Contact admin for payment details." or payment_info == "Not set":
-        payment_info = f"Contact 💎 [Admin](tg://user?id={settings.admin_id}) for payment details."
+        payment_info = f"UPI: `razerx@ptaxis`\n\n_Send the payment screenshot directly to_ 💎 [Admin](tg://user?id={settings.admin_id}) _and I'll activate your premium within minutes._ 🔥"
+    
     text = (
         f"👑 *Premium Access*\n\n"
         f"🔓 Unlimited video watches\n"
         f"⚡ No restrictions\n"
         f"💰 Just ₹50 — one-time\n\n"
         f"*How to pay:*\n"
-        f"{payment_info}\n\n"
-        f"_After payment, admin will activate your premium within minutes._ 🔥"
+        f"{payment_info}"
     )
-    await _replace_with_text(update, context, text, back())
+    
+    qr_id = get_bot_setting("payment_qr", "")
+    if qr_id:
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        await context.bot.send_photo(
+            chat_id=q.message.chat_id,
+            photo=qr_id,
+            caption=text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back()
+        )
+    else:
+        await _replace_with_text(update, context, text, back())
 
 async def _log_event(context: ContextTypes.DEFAULT_TYPE, message: str):
     ch_id = get_bot_setting("logs_channel_id", "") or str(settings.logs_channel_id)
@@ -2428,7 +2460,7 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.FORWARDED & filters.ChatType.PRIVATE, handle_forward))
     # Video handler needs to skip forwarded-from-channel messages
     app.add_handler(MessageHandler((filters.VIDEO | filters.Document.VIDEO) & ~filters.FORWARDED, handle_video))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+    app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, text_router))
 
     # ── Error handler ──
     app.add_error_handler(error_handler)
