@@ -2358,6 +2358,39 @@ async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         await _replace_with_text(update, context, text, back())
 
+async def grantadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update): return
+    if not context.args:
+        await update.message.reply_text("Usage: /grantadmin <user_id>")
+        return
+    ids = context.args
+    current = (get_bot_setting("extra_admins", "") or "").split()
+    added = 0
+    for cid in ids:
+        if cid.isdigit() and cid not in current:
+            current.append(cid)
+            added += 1
+    if added:
+        set_bot_setting("extra_admins", " ".join(current))
+    await update.message.reply_text(f"✅ Granted Admin to {added} users.")
+
+async def revokeadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update): return
+    if not context.args:
+        await update.message.reply_text("Usage: /revokeadmin <user_id>")
+        return
+    ids = context.args
+    current = (get_bot_setting("extra_admins", "") or "").split()
+    removed = 0
+    new_list = []
+    for cid in current:
+        if cid in ids:
+            removed += 1
+        else:
+            new_list.append(cid)
+    set_bot_setting("extra_admins", " ".join(new_list))
+    await update.message.reply_text(f"✅ Revoked Admin from {removed} users.")
+
 async def _log_event(context: ContextTypes.DEFAULT_TYPE, message: str):
     ch_id = get_bot_setting("logs_channel_id", "") or str(settings.logs_channel_id)
     if not ch_id or ch_id == "0":
@@ -2402,6 +2435,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("mystats", my_stats_callback))
     app.add_handler(CommandHandler("refer", refer_callback))
     app.add_handler(CommandHandler("premium", get_premium_callback))
+    app.add_handler(CommandHandler("grantadmin", grantadmin_command))
+    app.add_handler(CommandHandler("revokeadmin", revokeadmin_command))
     app.add_handler(CommandHandler("random", random_video))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("stats", stats))
