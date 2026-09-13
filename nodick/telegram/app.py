@@ -589,33 +589,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
         cmsg = update.callback_query.message
         
-        # If there's a GIF configured but the current message IS NOT media, we must switch to it.
-        if welcome_gif and not (cmsg.video or cmsg.document or cmsg.animation or cmsg.photo):
-            try:
-                await cmsg.delete()
-            except Exception:
-                pass
-            return await context.bot.send_animation(
-                chat_id=cmsg.chat_id, animation=welcome_gif, caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
-            )
+        has_media = bool(cmsg.video or cmsg.document or cmsg.animation or cmsg.photo)
+        is_photo = bool(cmsg.photo)
 
-        # If there's NO GIF configured but the current message IS media, we must delete it and switch to text.
-        if not welcome_gif and (cmsg.video or cmsg.document or cmsg.animation or cmsg.photo):
-            try:
-                await cmsg.delete()
-            except Exception:
-                pass
-            return await context.bot.send_message(
-                chat_id=cmsg.chat_id, text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
-            )
-            
-        try:
-            if cmsg.video or cmsg.document or cmsg.animation or cmsg.photo:
-                await update.callback_query.edit_message_caption(caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        if welcome_gif:
+            # We want the welcome media. If current message is text OR a Photo (like the QR code), swap it out.
+            if not has_media or is_photo:
+                try:
+                    await cmsg.delete()
+                except Exception:
+                    pass
+                return await context.bot.send_animation(
+                    chat_id=cmsg.chat_id, animation=welcome_gif, caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+                )
             else:
-                await update.callback_query.edit_message_text(text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-        except Exception:
-            pass
+                try:
+                    await update.callback_query.edit_message_caption(caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    pass
+        else:
+            # We want plain text. If current is any media, swap it out.
+            if has_media:
+                try:
+                    await cmsg.delete()
+                except Exception:
+                    pass
+                return await context.bot.send_message(
+                    chat_id=cmsg.chat_id, text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                try:
+                    await update.callback_query.edit_message_text(text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    pass
     else:
         if welcome_gif:
             try:
