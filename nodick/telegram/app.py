@@ -571,10 +571,16 @@ async def random_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
             ])
             if update.callback_query:
-                await update.callback_query.answer()
-                await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-            else:
-                await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+                try:
+                    await update.callback_query.answer("⚠️ Free completely used up!", show_alert=True)
+                except Exception:
+                    pass
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, 
+                text=text, 
+                reply_markup=markup, 
+                parse_mode=ParseMode.MARKDOWN
+            )
             return
 
     # Don't pre-answer — let _enrich_and_send handle it (or error handler on failure)
@@ -889,10 +895,16 @@ async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
             ])
             if update.callback_query:
-                await update.callback_query.answer()
-                await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-            else:
-                await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+                try:
+                    await update.callback_query.answer("⚠️ Free completely used up!", show_alert=True)
+                except Exception:
+                    pass
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, 
+                text=text, 
+                reply_markup=markup, 
+                parse_mode=ParseMode.MARKDOWN
+            )
             return
 
     q = update.callback_query
