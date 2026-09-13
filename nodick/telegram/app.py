@@ -1576,9 +1576,21 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif setting == "grantpremium":
             ids = text.split()
             count, failed = 0, 0
-            for cid in ids:
+            for cid_str in ids:
                 try:
-                    grant_premium(int(cid), None)
+                    cid = int(cid_str)
+                    grant_premium(cid, None)
+                    try:
+                        promo_text = (
+                            "👑 *PREMIUM UNLOCKED* 👑\n\n"
+                            "The admin has personally upgraded your account to *Lifetime Premium*! 🔥\n\n"
+                            "🔓 Unlimited Surprise Me accesses\n"
+                            "🚫 Zero restrictions natively unlocked\n\n"
+                            "Go wild. 😏"
+                        )
+                        await context.bot.send_message(chat_id=cid, text=promo_text, parse_mode=ParseMode.MARKDOWN)
+                    except Exception:
+                        pass
                     count += 1
                 except Exception:
                     failed += 1
@@ -2036,6 +2048,27 @@ async def grant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN,
     )
     await _log_event(context, f"👑 Premium granted to `{target_id}` ({duration})")
+    
+    try:
+        if days:
+            promo_text = (
+                "👑 *PREMIUM UNLOCKED* 👑\n\n"
+                f"Your account has been upgraded to *Premium* for {days} days! 🔥\n\n"
+                "🔓 Unlimited Surprise Me accesses\n"
+                "🚫 Zero restrictions natively unlocked\n\n"
+                "Go wild. 😏"
+            )
+        else:
+            promo_text = (
+                "👑 *PREMIUM UNLOCKED* 👑\n\n"
+                "The admin has personally upgraded your account to *Lifetime Premium*! 🔥\n\n"
+                "🔓 Unlimited Surprise Me accesses\n"
+                "🚫 Zero restrictions natively unlocked\n\n"
+                "Go wild. 😏"
+            )
+        await context.bot.send_message(chat_id=target_id, text=promo_text, parse_mode=ParseMode.MARKDOWN)
+    except Exception:
+        pass
 
 async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update):
