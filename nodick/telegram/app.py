@@ -224,6 +224,23 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     await q.answer("✅ Verified! Welcome in… 😏")
     markup = main_menu(user_id)
+    welcome_gif = get_bot_setting("welcome_gif", "")
+    
+    if welcome_gif:
+        try:
+            # We must delete the old text lock screen and send the new GIF
+            await q.message.delete()
+            await context.bot.send_animation(
+                chat_id=q.message.chat_id,
+                animation=welcome_gif,
+                caption=WELCOME_MSG,
+                reply_markup=markup,
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        except Exception as e:
+            pass # fallback to edit text
+            
     await q.edit_message_text(WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
 # ── In-Bot Ad system ──────────────────────────────────────────────────────
