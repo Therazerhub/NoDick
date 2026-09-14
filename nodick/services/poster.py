@@ -7,7 +7,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
 from nodick.db import _fetchone, _using_pg, get_bot_setting, get_video
-from nodick.metadata.stash import query_stashdb
+from nodick.metadata.stash import query_api
 
 try:
     from PIL import Image, ImageFilter, ImageDraw, ImageFont
@@ -19,6 +19,9 @@ import requests
 log = logging.getLogger(__name__)
 
 def fetch_scene_image(scene_id: str) -> Optional[bytes]:
+    if not settings.stash_configured:
+        return None
+        
     query = """
     query FindScene($id: ID!) {
       findScene(id: $id) {
@@ -29,7 +32,7 @@ def fetch_scene_image(scene_id: str) -> Optional[bytes]:
     }
     """
     try:
-        data = query_stashdb(query, {"id": scene_id})
+        data = query_api(settings.stashdb_graphql_url, settings.stashdb_api_key, query, {"id": scene_id})
         if data and "findScene" in data and data["findScene"]:
             images = data["findScene"].get("images")
             if images and len(images) > 0:
