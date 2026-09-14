@@ -941,11 +941,14 @@ def get_user_quota(user_id: int) -> dict:
     # Lazy Daily Reset check
     if str(q_date) != today:
         ph = "%s" if _using_pg else "?"
+        leftover = max(0, limit - used)
+        new_limit = leftover + 5
         _execute(
-            f"UPDATE user_settings SET quota_used = 0, quota_date = {ph} WHERE user_id = {ph}",
-            (today, user_id)
+            f"UPDATE user_settings SET quota_used = 0, quota_limit = {ph}, quota_date = {ph} WHERE user_id = {ph}",
+            (new_limit, today, user_id)
         )
         used = 0
+        limit = new_limit
         
     return {
         'used': used,

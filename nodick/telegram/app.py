@@ -569,7 +569,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if context.args and context.args[0].startswith("ref_"):
                 try:
                     referrer_id = int(context.args[0].replace("ref_", ""))
-                    bonus = int(get_bot_setting("referral_bonus", "5"))
+                    bonus = int(get_bot_setting("referral_bonus", "10"))
                     if record_referral(referrer_id, user.id, bonus):
                         await _log_event(context, f"✅ New referral: `{user.id}` joined via `{referrer_id}`")
                 except ValueError:
@@ -648,7 +648,7 @@ async def random_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🚫 *You've used all your free watches!*\n\n"
                 f"📊 Used: {quota['used']}/{quota['limit']}\n\n"
                 "💡 *Get more:*\n"
-                "🔗 Refer friends to earn +5 each\n"
+                "🔗 Refer friends to earn +10 each\n"
                 "👑 Or grab Premium for unlimited access\n"
             )
             markup = InlineKeyboardMarkup([
@@ -966,7 +966,7 @@ async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🚫 *You've used all your free watches!*\n\n"
                 f"📊 Used: {quota['used']}/{quota['limit']}\n\n"
                 "💡 *Get more:*\n"
-                "🔗 Refer friends to earn +5 each\n"
+                "🔗 Refer friends to earn +10 each\n"
                 "👑 Or grab Premium for unlimited access\n"
             )
             markup = InlineKeyboardMarkup([
@@ -2322,7 +2322,7 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ref_count = get_referral_count(user_id)
     bot_username = (await context.bot.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-    bonus = int(get_bot_setting("referral_bonus", "5"))
+    bonus = int(get_bot_setting("referral_bonus", "10"))
     text = (
         f"🔗 *Refer & Earn*\n\n"
         f"Share your link and earn *+{bonus} free watches* per friend!\n\n"
