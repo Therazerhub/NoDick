@@ -2478,7 +2478,10 @@ def build_application() -> Application:
             from nodick.services.poster import send_auto_post
             await send_auto_post(context.bot, channel_id)
 
-    app.job_queue.run_repeating(auto_post_job, interval=3600, first=60)
+    if app.job_queue:
+        app.job_queue.run_repeating(auto_post_job, interval=3600, first=60)
+    else:
+        log.warning("JobQueue not initialized. Auto-post will not run.")
 
     # ── Commands ──
     app.add_handler(CommandHandler("start", start))
