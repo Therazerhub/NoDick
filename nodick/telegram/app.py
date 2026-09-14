@@ -579,6 +579,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name_str = " ".join(full_name) or "Unknown"
             await _log_event(context, f"👤 *New User*\nID: `{user.id}`\nUsername: {username}\nName: {name_str}")
             
+    if context.args and context.args[0].startswith("vid_"):
+        if await _check_force_join(update, context):
+            return
+        try:
+            vid_id = int(context.args[0].replace("vid_", ""))
+            # Quota Check logic
+            if not _is_admin(update) and not is_user_premium(user.id):
+                from nodick.db import increment_quota, get_user_quota
+                if not increment_quota(user.id):
+                    quota = get_user_quota(user.id)
+                    text = (
+                        "🚫 *You've used all your free watches!*\n\n"
+                        f"📊 Used: {quota['used']}/{quota['limit']}\n\n"
+                        "💡 *Get more:*\n"
+                        "🔗 Refer friends to earn +10 each\n"
+                        "👑 Or grab Premium for unlimited access\n"
+                    )
+                    markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer")],
+                        [InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")],
+                        [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+                    ])
+                    await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+                    return
+            
+            await _enrich_and_send(update, context, vid_id, allow_redirect=True)
+            return
+        except Exception as e:
+            log.error(f"Error handling vid deep link: {e}")
+
     if await _check_force_join(update, context):
         return
     markup = main_menu(user.id if user else None)
@@ -1091,6 +1121,10 @@ async def toggle_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current = get_bot_setting("auto_delete_enabled", "1")
         set_bot_setting("auto_delete_enabled", "0" if current == "1" else "1")
         await q.edit_message_text("⚙️ Settings toggled.", reply_markup=settings_keyboard())
+    elif setting == "autopost":
+        current = get_bot_setting("auto_post_enabled", "0")
+        set_bot_setting("auto_post_enabled", "0" if current == "1" else "1")
+        await q.edit_message_text("⚙️ Auto-Post Task toggled.", reply_markup=settings_keyboard())
 
 
 # ── Quality (max file size) filter ─────────────────────────────────────────
@@ -1104,6 +1138,18 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     action = q.data.replace("prompt_", "")
+    
+    if action == "autopostnow":
+        from nodick.services.poster import send_auto_post
+        channel_id = get_bot_setting("auto_post_channel", "-1004422688523")
+        await q.edit_message_text(f"🚀 Triggering post to {channel_id}...", reply_markup=back())
+        success = await send_auto_post(context.bot, channel_id)
+        if success:
+            await context.bot.send_message(update.effective_chat.id, "✅ Auto-Post successfully dropped in the channel.")
+        else:
+            await context.bot.send_message(update.effective_chat.id, "❌ Failed. Make sure bot is admin in the channel and has access to fetch videos.")
+        return
+
     context.user_data["waiting_for_setting"] = action
     
     prompts = {
@@ -2422,6 +2468,17 @@ def build_application() -> Application:
         .concurrent_updates(True)
         .build()
     )
+
+    # ── Job Queue ──
+    async def auto_post_job(context: ContextTypes.DEFAULT_TYPE):
+        from nodick.db import get_bot_setting
+        enabled = get_bot_setting("auto_post_enabled", "0")
+        if enabled == "1":
+            channel_id = get_bot_setting("auto_post_channel", "-1004422688523")
+            from nodick.services.poster import send_auto_post
+            await send_auto_post(context.bot, channel_id)
+
+    app.job_queue.run_repeating(auto_post_job, interval=3600, first=60)
 
     # ── Commands ──
     app.add_handler(CommandHandler("start", start))

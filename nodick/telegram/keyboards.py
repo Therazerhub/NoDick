@@ -174,6 +174,10 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔒 Force Join", callback_data="prompt_forcejoin")
         ],
         [
+            InlineKeyboardButton("🚀 Trigger Auto-Post", callback_data="prompt_autopostnow"),
+            InlineKeyboardButton("⚙️ Auto-Post Task", callback_data="toggle_autopost")
+        ],
+        [
             InlineKeyboardButton("👑 Grant Prem", callback_data="prompt_grantpremium"),
             InlineKeyboardButton("🚫 Revoke Prem", callback_data="prompt_revokepremium")
         ],
