@@ -263,7 +263,7 @@ def part_nav_row(siblings: list[dict], video_id: int) -> list[InlineKeyboardButt
     return row
 
 def refer_keyboard(ref_link: str) -> InlineKeyboardMarkup:
-    share_text = urllib.parse.quote("Looking for the ultimate Telegram stash bot? This one is insane. Use my link to join and get extra bonuses! 🤫✨")
+    share_text = urllib.parse.quote("Looking for the ultimate Telegram adult content bot? This one is insane. Use my link to join and get extra bonuses! 🤫✨")
     share_url = f"https://t.me/share/url?url={ref_link}&text={share_text}"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Share via Telegram", url=share_url)],
