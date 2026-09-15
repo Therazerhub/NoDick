@@ -2389,43 +2389,40 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     progress = ref_count % 10
     needed = 10 - progress
     
-    stats_text = (
-        f"🔗 *Your Referral Hub*\n\n"
-        f"👥 Friends referred: *{ref_count}*\n"
-        f"🎁 You need *{needed}* more invites for your next 1-Month Premium reward!\n\n"
-        f"👇 *Forward the message below to your friends to invite them!*"
+    text = (
+        f"🔗 *Invite Friends, Get Free Bot Premium*\n\n"
+        f"Get instant access to thousands of premium, organized adult videos—no ads, no friction. Just instant streaming directly in Telegram. 💦\n\n"
+        f"Want unlimited access? Invite your friends into the club:\n"
+        f"• Get *+{bonus} free watches* instantly per referral.\n"
+        f"• Unlock *1 Full Month of Premium* for every 10 referrals!\n"
+        f"  _(You only need {needed} more for your next Premium drop)_\n\n"
+        f"👉 [Click here to unlock your free access]({ref_link})\n\n"
+        f"👥 Friends referred so far: *{ref_count}*\n\n"
+        f"👇 *Forward this message to your friends to invite them!*"
     )
     
-    pitch_text = (
-        f"This bot is your private gateway to thousands of premium, organized adult videos—no ads, no friction. Just instant streaming directly in Telegram. 💦\n\n"
-        f"👉 [Click here to unlock your free access]({ref_link})"
-    )
-    
-    # 1. Update current menu to show stats and instructions
-    await _replace_with_text(update, context, stats_text, back())
-    
-    # 2. Drop the pristine pitch message below it for them to forward
     refer_gif = get_bot_setting("refer_gif", "")
+    
     if refer_gif:
+        q = update.callback_query
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+            
         try:
             await context.bot.send_animation(
                 chat_id=update.effective_chat.id,
                 animation=refer_gif,
-                caption=pitch_text,
+                caption=text,
+                reply_markup=back(),
                 parse_mode=ParseMode.MARKDOWN
             )
+            return
         except Exception:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=pitch_text,
-                parse_mode=ParseMode.MARKDOWN
-            )
-    else:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=pitch_text,
-            parse_mode=ParseMode.MARKDOWN
-        )
+            pass # fallback to text below
+            
+    await _replace_with_text(update, context, text, back())
 
 async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
