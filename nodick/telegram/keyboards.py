@@ -170,15 +170,19 @@ def settings_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("🎁 Ref Bonus", callback_data="prompt_refbonus"),
-            InlineKeyboardButton("🖼️ Set GIF", callback_data="prompt_welcomegif")
+            InlineKeyboardButton("🔗 Ref GIF", callback_data="prompt_refergif"),
         ],
         [
-            InlineKeyboardButton("📋 Logs Channel", callback_data="prompt_logschannel"),
-            InlineKeyboardButton("🔒 Force Join", callback_data="prompt_forcejoin")
+            InlineKeyboardButton("🖼️ Welcome GIF", callback_data="prompt_welcomegif"),
+            InlineKeyboardButton("📋 Logs Channel", callback_data="prompt_logschannel")
         ],
         [
-            InlineKeyboardButton("🚀 Trigger Auto-Post", callback_data="prompt_autopostnow"),
-            InlineKeyboardButton("⚙️ Auto-Post Task", callback_data="toggle_autopost")
+            InlineKeyboardButton("🔒 Force Join", callback_data="prompt_forcejoin"),
+            InlineKeyboardButton("🚀 Auto-Post Now", callback_data="prompt_autopostnow")
+        ],
+        [
+            InlineKeyboardButton("⚙️ Auto-Post Task", callback_data="toggle_autopost"),
+            InlineKeyboardButton("📢 Broadcast", callback_data="prompt_broadcast")
         ],
         [
             InlineKeyboardButton("👑 Grant Prem", callback_data="prompt_grantpremium"),

@@ -1179,6 +1179,7 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "grantadmin": "Send me the *User IDs* to grant Admin rights to, separated by spaces:",
         "revokeadmin": "Send me the *Admin IDs* to revoke Admin rights from, separated by spaces:",
         "welcomegif": "Send a URL to a GIF or Video to serve as the Welcome Banner (e.g. a Tenor link):\n\n_(Send `clear` to disable)_",
+        "refergif": "Send a URL to a GIF or Video to serve as the Referral Banner (e.g. a Tenor link):\n\n_(Send `clear` to disable)_",
         "broadcast": "Send the message you want to broadcast to ALL your bot users:\n\n_(Standard text and Telegram formatting allowed)_",
     }
     
@@ -1770,6 +1771,14 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 set_bot_setting("welcome_gif", text)
                 msg = "✅ Welcome GIF updated!"
+                
+        elif setting == "refergif":
+            if text.lower() == "clear":
+                set_bot_setting("refer_gif", "")
+                msg = "✅ Referral GIF disabled."
+            else:
+                set_bot_setting("refer_gif", text)
+                msg = "✅ Referral GIF updated!"
         
         await update.message.reply_text(msg, reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
         return
@@ -2397,6 +2406,28 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👥 Friends referred: *{ref_count}*\n\n"
         f"_They join, you get spoiled. Simple._ 😏"
     )
+    
+    refer_gif = get_bot_setting("refer_gif", "")
+    
+    if refer_gif:
+        q = update.callback_query
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+            
+        try:
+            await context.bot.send_animation(
+                chat_id=update.effective_chat.id,
+                animation=refer_gif,
+                caption=text,
+                reply_markup=refer_keyboard(ref_link),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        except Exception:
+            pass # fallback to text below if animation fails
+            
     await _replace_with_text(update, context, text, refer_keyboard(ref_link))
 
 async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
