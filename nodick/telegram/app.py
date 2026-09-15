@@ -75,6 +75,7 @@ from nodick.services.message_importer import (
 )
 from nodick.telegram.keyboards import (
     back,
+    refer_keyboard,
     import_menu as import_keyboard,
     scan_running_keyboard,
     main_menu,
@@ -571,7 +572,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     referrer_id = int(context.args[0].replace("ref_", ""))
                     bonus = int(get_bot_setting("referral_bonus", "10"))
                     if record_referral(referrer_id, user.id, bonus):
-                        await _log_event(context, f"✅ New referral: `{user.id}` joined via `{referrer_id}`")
+                        refs = get_referral_count(referrer_id)
+                        if refs > 0 and refs % 10 == 0:
+                            grant_premium(referrer_id, 30)
+                            await _log_event(context, f"✅ New referral: `{user.id}` joined via `{referrer_id}`. 🎁 Referrer hit {refs} and got 30 days Premium!")
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=referrer_id, 
+                                    text=f"🎉 *Congratulations!*\n\nYou just hit {refs} referrals! As a reward, you've unlocked *1 Month of Premium*! 👑\n\nEnjoy the unrestricted access.",
+                                    parse_mode=ParseMode.MARKDOWN
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            await _log_event(context, f"✅ New referral: `{user.id}` joined via `{referrer_id}`")
                 except ValueError:
                     pass
             username = f"@{user.username}" if user.username else "No username"
@@ -2369,14 +2383,21 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = (await context.bot.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
     bonus = int(get_bot_setting("referral_bonus", "10"))
+    
+    progress = ref_count % 10
+    needed = 10 - progress
+    
     text = (
         f"🔗 *Refer & Earn*\n\n"
-        f"Share your link and earn *+{bonus} free watches* per friend!\n\n"
+        f"Share your link to unlock free watches AND Premium! 🎁\n\n"
+        f"• Earn *+{bonus} watches* per friend.\n"
+        f"• *1 Month Premium* for every 10 referrals!\n"
+        f"  _(You need {needed} more for your next Premium reward)_\n\n"
         f"Your link:\n`{ref_link}`\n\n"
         f"👥 Friends referred: *{ref_count}*\n\n"
-        f"_They join, you earn. Simple._ 😏"
+        f"_They join, you get spoiled. Simple._ 😏"
     )
-    await _replace_with_text(update, context, text, back())
+    await _replace_with_text(update, context, text, refer_keyboard(ref_link))
 
 async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query

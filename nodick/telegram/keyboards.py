@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
@@ -19,7 +20,10 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔍 Search", callback_data="search_menu"),
             InlineKeyboardButton("📁 Categories", callback_data="categories"),
         ],
-        [InlineKeyboardButton("⭐ Favorites", callback_data="favorites")],
+        [
+            InlineKeyboardButton("⭐ Favorites", callback_data="favorites"),
+            InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer"),
+        ]
     ]
     
     # Account/Premium menu for ALL users
@@ -58,7 +62,6 @@ def back() -> InlineKeyboardMarkup:
 def account_keyboard(user_id: int) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("📊 My Stats", callback_data="my_stats")],
-        [InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer")],
     ]
     if not is_user_premium(user_id):
         rows.append([InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")])
@@ -258,3 +261,11 @@ def part_nav_row(siblings: list[dict], video_id: int) -> list[InlineKeyboardButt
         row.append(InlineKeyboardButton("▶️", callback_data=f"play_{next_video['id']}"))
 
     return row
+
+def refer_keyboard(ref_link: str) -> InlineKeyboardMarkup:
+    share_text = urllib.parse.quote("Looking for the ultimate Telegram stash bot? This one is insane. Use my link to join and get extra bonuses! 🤫✨")
+    share_url = f"https://t.me/share/url?url={ref_link}&text={share_text}"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Share via Telegram", url=share_url)],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")]
+    ])
