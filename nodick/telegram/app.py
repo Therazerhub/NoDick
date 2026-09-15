@@ -126,17 +126,11 @@ except ImportError as e:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-WELCOME_MSG = """𝕿𝖍𝖊 𝖁𝖆𝖚𝖑𝖙 𝖎𝖘 𝕺𝖕𝖊𝖓. 🖤
+WELCOME_MSG = """*Welcome to your new favorite addiction.* 🖤
 
-━━━━━━━━━━━━━━━━━━━━
+I serve up an endless, organized stash of premium adult videos directly in your chat. No ads, no pop-ups, no bullshit. Just the good stuff, hand-picked and ready to stream instantly. 💦
 
-*Your personal, zero-clutter stash of premium organized filth.* 💦
-
-⏳ _Warning: Videos self-destruct in 30 minutes. Save what makes you ache before the ghost protocol wipes them._ 👻
-
-**Dive in. I know you want to.** 😈
-
-━━━━━━━━━━━━━━━━━━━━
+Hit a button below to get started. 😈
 
 ⚡ _Architected by_ [The Razer](tg://user?id=6001922744) 🔥"""
 
@@ -2397,14 +2391,15 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     needed = 10 - progress
     
     text = (
-        f"🔗 *Refer & Earn*\n\n"
-        f"Share your link to unlock free watches AND Premium! 🎁\n\n"
-        f"• Earn *+{bonus} watches* per friend.\n"
-        f"• *1 Month Premium* for every 10 referrals!\n"
-        f"  _(You need {needed} more for your next Premium reward)_\n\n"
-        f"Your link:\n`{ref_link}`\n\n"
-        f"👥 Friends referred: *{ref_count}*\n\n"
-        f"_They join, you get spoiled. Simple._ 😏"
+        f"🔗 *Invite Friends, Get Free Premium*\n\n"
+        f"This bot is your private gateway to thousands of premium, organized adult videos—no ads, no friction. Just instant streaming directly in Telegram. 💦\n\n"
+        f"Want unlimited access? Invite your friends into the club:\n"
+        f"• Get *+{bonus} free watches* instantly per referral.\n"
+        f"• Unlock *1 Full Month of Bot Premium* for every 10 referrals!\n"
+        f"  _(You only need {needed} more for your next Premium drop)_\n\n"
+        f"👉 [Click here to copy your exclusive Invite Link]({ref_link})\n\n"
+        f"👥 Friends referred so far: *{ref_count}*\n\n"
+        f"_(Pro-tip: Telegram doesn't share GIFs through the share button. If you want to send this sick GIF to a friend, just hit Forward on this message!)_ 🚀"
     )
     
     refer_gif = get_bot_setting("refer_gif", "")
