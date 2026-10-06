@@ -81,6 +81,45 @@ def create_fallback_image() -> bytes:
         return b""
 
 
+async def fetch_telegram_thumb(video: dict) -> Optional[bytes]:
+    """Pull the video's own Telegram thumbnail via Telethon, if available.
+
+    Uses ``source_chat_id`` + ``source_message_id`` (set by the importer) to
+    locate the original message, then extracts a document thumbnail and
+    downloads it. Returns raw JPEG bytes, or None if unavailable.
+
+    This is async because Telethon is async; it uses the cached bot client so
+    it doesn't reconnect per post.
+    """
+    chat_id = video.get("source_chat_id")
+    msg_id = video.get("source_message_id")
+    if not chat_id or not msg_id:
+        return None
+    try:
+        from nodick.services.message_importer import _get_telethon_client
+        client = await _get_telethon_client()
+        msgs = await client.get_messages(chat_id, ids=int(msg_id))
+        msg = msgs[0] if msgs else None
+        if not msg or not getattr(msg, "media", None):
+            return None
+        # Prefer the document/video thumbnail
+        media = getattr(msg, "document", None) or getattr(msg, "video", None) or None
+        thumb = None
+        if media is not None and getattr(media, "thumbs", None):
+            thumb = media.thumbs[0]  # often a thumbnail photo/size
+        if thumb is None:
+            return None
+        import io as _io
+        from telethon.tl.types import PhotoSize  # noqa: F401
+        out = _io.BytesIO()
+        await client.download_media(thumb, file=out)
+        data = out.getvalue()
+        return data if data else None
+    except Exception as e:
+        log.info("Telegram thumb unavailable for video %s: %s", video.get("id"), e)
+        return None
+
+
 # ── Channel / cooldown state (bot_settings-backed, both backends) ────────────
 
 def _get_channels() -> list[dict]:
@@ -134,7 +173,8 @@ def _cooldown_active() -> bool:
 SELECT_SQL = """
     SELECT v.id, v.title, v.category, v.tags,
            m.stashdb_scene_id, m.stashdb_title,
-           m.stashdb_performer, m.stashdb_studio
+           m.stashdb_performer, m.stashdb_studio,
+           v.source_chat_id, v.source_message_id
     FROM videos v
     JOIN video_metadata m ON v.id = m.video_id
     WHERE m.stashdb_scene_id IS NOT NULL
@@ -199,7 +239,11 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
     performer = video.get("stashdb_performer") or "Unknown"
     category = video.get("category") or "Vault"
 
+    # Build image, best chain first: StashDB scene art → the video's own
+    # Telegram thumbnail → plain placeholder. All blurred for SFW safety.
     img_data = fetch_scene_image(scene_id) if scene_id else None
+    if not img_data:
+        img_data = await fetch_telegram_thumb(video)
     blurred = create_blurred_thumbnail(img_data) if img_data else create_fallback_image()
     if not blurred:
         log.error("Could not generate any image for autopost")
