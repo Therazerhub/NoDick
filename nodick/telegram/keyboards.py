@@ -181,6 +181,10 @@ def settings_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("⚙️ Auto-Post Task", callback_data="toggle_autopost"),
+            InlineKeyboardButton("⏰ Post Cooldown", callback_data="prompt_autopost_cooldown")
+        ],
+        [
+            InlineKeyboardButton("📡 Post Channels", callback_data="prompt_autopost_channels"),
             InlineKeyboardButton("📢 Broadcast", callback_data="prompt_broadcast")
         ],
         [

@@ -51,6 +51,20 @@
 
 **🎭 Performer Search** — Query StashDB's performer database directly from Telegram.
 
+**🔥 Watch Streaks** — Watch something daily, build a streak. Consecutive days earn bonus daily watches:
+```
+1-2 days   → base quota (leftover + 5)
+3-6 days   → +2 bonus watches daily
+7+ days    → +3 bonus watches daily
+```
+Check your streak with **👤 My Account → 📊 My Stats**. Break a day, lose the streak — personal best is kept.
+
+**🚀 Channel Autoposter** — Drops blurred SFW teasers to your channel(s) that deep-link into the bot, driving views. Set in ⚙️ Settings:
+- **📡 Post Channels** — multiple channels, space-separated IDs
+- **⏰ Post Cooldown** — min hours between auto-posts (default 6)
+- **🚀 Auto-Post Now** — manual trigger (bypasses cooldown)
+- Repeats avoided automatically (never re-posts the same video back-to-back).
+
 **📥 Dual Import Modes**
 - `/import_scan` — Telethon bot-token mode, silent, no user session needed
 - `/import` — Full channel history import via Telethon user session (requires session-login)

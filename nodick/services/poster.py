@@ -1,16 +1,18 @@
 import io
+import json
 import logging
 import random
+from datetime import datetime, timedelta
 from typing import Optional
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
-from nodick.db import _fetchone, _using_pg, get_bot_setting, get_video
+from nodick.db import _fetchone, get_bot_setting, get_video
 from nodick.metadata.stash import query_api
 
 try:
-    from PIL import Image, ImageFilter, ImageDraw, ImageFont
+    from PIL import Image, ImageFilter
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -18,125 +20,221 @@ import requests
 
 log = logging.getLogger(__name__)
 
+
+# ── Image helpers ────────────────────────────────────────────────────────────
+
 def fetch_scene_image(scene_id: str) -> Optional[bytes]:
     if not settings.stash_configured:
         return None
-        
     query = """
     query FindScene($id: ID!) {
       findScene(id: $id) {
-        images {
-          url
-        }
+        images { url }
       }
     }
     """
     try:
-        data = query_api(settings.stashdb_graphql_url, settings.stashdb_api_key, query, {"id": scene_id})
-        if data and "findScene" in data and data["findScene"]:
-            images = data["findScene"].get("images")
-            if images and len(images) > 0:
-                url = images[0]["url"]
-                resp = requests.get(url, timeout=10)
-                if resp.status_code == 200:
-                    return resp.content
+        data = query_api(
+            settings.stashdb_graphql_url, settings.stashdb_api_key,
+            query, {"id": scene_id}
+        )
+        scene = (data or {}).get("findScene") or {}
+        images = scene.get("images") or []
+        if images:
+            resp = requests.get(images[0]["url"], timeout=10)
+            if resp.status_code == 200:
+                return resp.content
     except Exception as e:
-        log.error(f"Failed to fetch scene image for {scene_id}: {e}")
+        log.error("Failed to fetch scene image for %s: %s", scene_id, e)
     return None
 
+
 def create_blurred_thumbnail(image_bytes: bytes) -> bytes:
+    """Heavy Gaussian blur + darken for SFW channel safety."""
     if not HAS_PIL:
         return image_bytes
     try:
+        from PIL import Image, ImageFilter
         with Image.open(io.BytesIO(image_bytes)) as img:
             img = img.convert("RGB")
-            # Heavy blur
             blurred = img.filter(ImageFilter.GaussianBlur(50))
-            
-            # Darken it a bit
-            enhancer = Image.eval(blurred, lambda x: int(x * 0.7))
-            
+            darkened = Image.eval(blurred, lambda x: int(x * 0.7))
             out = io.BytesIO()
-            enhancer.save(out, format="JPEG", quality=85)
+            darkened.save(out, format="JPEG", quality=85)
             return out.getvalue()
     except Exception as e:
-        log.error(f"Failed to blur image: {e}")
+        log.error("Failed to blur image: %s", e)
         return image_bytes
 
-def create_fallback_image(title: str) -> bytes:
+
+def create_fallback_image() -> bytes:
+    """Plain dark placeholder when no image can be generated."""
     if not HAS_PIL:
         return b""
-    img = Image.new('RGB', (800, 450), color=(20, 20, 24))
     try:
-        # Just return a raw minimal placeholder if no text font easily available
+        from PIL import Image
+        img = Image.new("RGB", (800, 450), color=(20, 20, 24))
         out = io.BytesIO()
         img.save(out, format="JPEG")
         return out.getvalue()
     except Exception:
         return b""
 
-async def send_auto_post(bot: Bot, channel_id: str) -> bool:
-    # 1. Pick a high quality video from DB (e.g. metadata exists)
-    query = """
-        SELECT v.id, v.title, v.category, v.tags, m.stashdb_scene_id, m.stashdb_title, m.stashdb_performer, m.stashdb_studio
-        FROM videos v
-        JOIN video_metadata m ON v.id = m.video_id
-        WHERE m.stashdb_scene_id IS NOT NULL
-        ORDER BY RANDOM() LIMIT 1
-    """
-    row = _fetchone(query)
-    
-    if not row:
-        # Fallback to any random video if no metadata
-        row = _fetchone("SELECT id, title, category, tags, NULL as stashdb_scene_id, NULL as stashdb_title, NULL as stashdb_performer FROM videos ORDER BY RANDOM() LIMIT 1")
-    
-    if not row:
+
+# ── Channel / cooldown state (bot_settings-backed, both backends) ────────────
+
+def _get_channels() -> list[dict]:
+    """Multi-channel list; falls back to the legacy single-channel key."""
+    raw = get_bot_setting("auto_post_channels", "")
+    if raw:
+        try:
+            channels = json.loads(raw)
+            if channels:
+                return channels
+        except Exception:
+            pass
+    legacy = get_bot_setting("auto_post_channel", "")
+    if legacy:
+        return [{"id": legacy, "name": f"Channel {legacy}"}]
+    return []
+
+
+def _mark_posted(video_id: int) -> None:
+    """Record this video as posted + refresh the last-posted timestamp."""
+    from nodick.db import set_bot_setting
+    try:
+        posted = json.loads(get_bot_setting("auto_post_posted_ids", "[]") or "[]")
+    except Exception:
+        posted = []
+    # Dedup + keep most recent first, cap growth
+    posted = [v for v in posted if v != video_id]
+    posted.append(video_id)
+    set_bot_setting("auto_post_posted_ids", json.dumps(posted[-400:]))
+    set_bot_setting("auto_post_last", datetime.now().isoformat())
+
+
+def _cooldown_active() -> bool:
+    """True if the cooldown window hasn't elapsed since the last post."""
+    last_str = get_bot_setting("auto_post_last", "")
+    if not last_str:
         return False
-        
-    vid_id = row["id"] if _using_pg else row["id"]
-    scene_id = row["stashdb_scene_id"] if _using_pg else row["stashdb_scene_id"]
-    
-    title = row["stashdb_title"] or row["title"] or "Exclusive Video"
-    performer = row["stashdb_performer"] or "Unknown"
-    category = row["category"] or "Vault"
-    
-    # 2. Get image
-    img_data = None
-    if scene_id:
-        img_data = fetch_scene_image(scene_id)
-        
-    if img_data:
-        blurred_data = create_blurred_thumbnail(img_data)
-    else:
-        blurred_data = create_fallback_image(title)
-        if not blurred_data:
-            return False # Skip if we can't generate an image
-            
-    # 3. Create Message
-    text = (
+    cooldown_hours = int(get_bot_setting("auto_post_cooldown", "6") or "6")
+    try:
+        last = datetime.fromisoformat(last_str)
+    except Exception:
+        return False
+    return datetime.now() - last < timedelta(hours=cooldown_hours)
+
+
+# ── Video selection (random from existing stash, repeats avoided) ────────────
+# Query uses the existing rows regardless of posted history, but we keep trying
+# until we land on an un-posted video. Bounded retries keep it cheap; if the
+# whole stash has been posted, we accept a repeat (the cooldown caps rate).
+
+SELECT_SQL = """
+    SELECT v.id, v.title, v.category, v.tags,
+           m.stashdb_scene_id, m.stashdb_title,
+           m.stashdb_performer, m.stashdb_studio
+    FROM videos v
+    JOIN video_metadata m ON v.id = m.video_id
+    WHERE m.stashdb_scene_id IS NOT NULL
+    ORDER BY RANDOM() LIMIT 1
+"""
+
+
+def _select_one() -> Optional[dict]:
+    row = _fetchone(SELECT_SQL)
+    if not row:
+        return None
+    return dict(row)
+
+
+def _select_video() -> Optional[dict]:
+    """Random stash pick, retrying to avoid re-posting the same recent video."""
+    try:
+        posted = set(json.loads(get_bot_setting("auto_post_posted_ids", "[]") or "[]"))
+    except Exception:
+        posted = set()
+
+    attempts = 0
+    while attempts < 15:
+        v = _select_one()
+        if not v:
+            return None
+        if v["id"] not in posted or len(posted) == 0:
+            return v
+        attempts += 1
+    # Whole (recent) stash already posted → accept whatever we last pulled
+    return _select_one()
+
+
+# ── Main poster ──────────────────────────────────────────────────────────────
+
+async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = False) -> int:
+    """Post one blurred teaser to all configured channels.
+
+    If ``channel_id`` is passed, post only to that channel (manual trigger).
+    ``force=True`` bypasses the cooldown (manual \"Post Now\").
+    Returns number of successful posts (0 on cooldown/no channels/no videos).
+    """
+    if _cooldown_active() and not force:
+        log.info("Auto-post skipped: cooldown active")
+        return 0
+
+    channels = _get_channels()
+    if channel_id:
+        channels = [c for c in channels if c["id"] == channel_id]
+    if not channels:
+        log.warning("No autopost channels configured")
+        return 0
+
+    video = _select_video()
+    if not video:
+        log.warning("No videos available for autopost")
+        return 0
+
+    vid_id = video["id"]
+    scene_id = video.get("stashdb_scene_id")
+    title = video.get("stashdb_title") or video.get("title") or "Exclusive Video"
+    performer = video.get("stashdb_performer") or "Unknown"
+    category = video.get("category") or "Vault"
+
+    img_data = fetch_scene_image(scene_id) if scene_id else None
+    blurred = create_blurred_thumbnail(img_data) if img_data else create_fallback_image()
+    if not blurred:
+        log.error("Could not generate any image for autopost")
+        return 0
+
+    caption = (
         f"🎬 **{title}**\n\n"
         f"👤 {performer}\n"
         f"🏷 #{category.replace(' ', '')}\n\n"
         f"❤️ *[ Content Hidden ]*\n\n"
-        f"👇 *Tap below to instantly unlock the full Uncensored video.*"
+        f"👇 *Tap below to instantly unlock the full uncensored video.*"
     )
-    
+
     bot_info = await bot.get_me()
-    bot_url = f"https://t.me/{bot_info.username}?start=vid_{vid_id}"
-    
+    deep_link = f"https://t.me/{bot_info.username}?start=vid_{vid_id}"
     markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 Watch in Bot", url=bot_url)]
+        [InlineKeyboardButton("🔓 Watch in Bot", url=deep_link)]
     ])
-    
-    try:
-        await bot.send_photo(
-            chat_id=channel_id,
-            photo=blurred_data,
-            caption=text,
-            parse_mode="Markdown",
-            reply_markup=markup
-        )
-        return True
-    except Exception as e:
-        log.error(f"Channel post failed: {e}")
-        return False
+
+    successes = 0
+    for ch in channels:
+        try:
+            await bot.send_photo(
+                chat_id=ch["id"],
+                photo=blurred,
+                caption=caption,
+                parse_mode="Markdown",
+                reply_markup=markup,
+            )
+            successes += 1
+            log.info("Posted autopost to %s (%s)", ch["id"], ch.get("name", ""))
+        except Exception as e:
+            log.error("Failed to post to channel %s: %s", ch["id"], e)
+
+    if successes:
+        _mark_posted(vid_id)
+
+    return successes

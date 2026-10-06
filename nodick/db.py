@@ -161,7 +161,10 @@ def _init_pg():
                 quota_used INTEGER DEFAULT 0,
                 quota_limit INTEGER DEFAULT 5,
                 referred_by BIGINT,
-                quota_date TEXT
+                quota_date TEXT,
+                streak_count INTEGER DEFAULT 0,
+                streak_last_date TEXT,
+                streak_best INTEGER DEFAULT 0
             )
         """)
         cur.execute("""
@@ -243,6 +246,9 @@ def _init_pg():
             "quota_limit": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_limit INTEGER DEFAULT 5",
             "referred_by": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS referred_by BIGINT",
             "quota_date": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_date TEXT",
+            "streak_count": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS streak_count INTEGER DEFAULT 0",
+            "streak_last_date": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS streak_last_date TEXT",
+            "streak_best": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS streak_best INTEGER DEFAULT 0",
         }
         for col, sql in us_migrations.items():
             if col not in us_existing:
@@ -305,7 +311,16 @@ def _init_sqlite():
         max_size_mb INTEGER,
         is_admin INTEGER DEFAULT 0,
         first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        is_premium INTEGER DEFAULT 0,
+        premium_until TIMESTAMP,
+        quota_used INTEGER DEFAULT 0,
+        quota_limit INTEGER DEFAULT 5,
+        referred_by INTEGER,
+        quota_date TEXT,
+        streak_count INTEGER DEFAULT 0,
+        streak_last_date TEXT,
+        streak_best INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS bot_settings (
@@ -359,11 +374,24 @@ def _init_sqlite():
                     pass
 
         us_existing = {row[1] for row in conn.execute("PRAGMA table_info(user_settings)")}
-        if "max_size_mb" not in us_existing:
-            try:
-                conn.execute("ALTER TABLE user_settings ADD COLUMN max_size_mb INTEGER")
-            except sqlite3.OperationalError:
-                pass
+        us_migrations = {
+            "max_size_mb": "ALTER TABLE user_settings ADD COLUMN max_size_mb INTEGER",
+            "is_premium": "ALTER TABLE user_settings ADD COLUMN is_premium INTEGER DEFAULT 0",
+            "premium_until": "ALTER TABLE user_settings ADD COLUMN premium_until TIMESTAMP",
+            "quota_used": "ALTER TABLE user_settings ADD COLUMN quota_used INTEGER DEFAULT 0",
+            "quota_limit": "ALTER TABLE user_settings ADD COLUMN quota_limit INTEGER DEFAULT 5",
+            "referred_by": "ALTER TABLE user_settings ADD COLUMN referred_by INTEGER",
+            "quota_date": "ALTER TABLE user_settings ADD COLUMN quota_date TEXT",
+            "streak_count": "ALTER TABLE user_settings ADD COLUMN streak_count INTEGER DEFAULT 0",
+            "streak_last_date": "ALTER TABLE user_settings ADD COLUMN streak_last_date TEXT",
+            "streak_best": "ALTER TABLE user_settings ADD COLUMN streak_best INTEGER DEFAULT 0",
+        }
+        for col, sql in us_migrations.items():
+            if col not in us_existing:
+                try:
+                    conn.execute(sql)
+                except sqlite3.OperationalError:
+                    pass
 
 
 # ── Video CRUD ──────────────────────────────────────────────────────────
@@ -873,6 +901,91 @@ def set_user_size_limit(user_id: int, mb: Optional[int]) -> None:
 
 
 
+# ── Watch Streaks ──────────────────────────────────────────────────────────
+
+# Streak tier: consecutive active days → bonus daily quota. The base daily
+# reset stays leftover + 5 (accumulator) and the streak bonus is ADDED on top,
+# capped so hoarders can't farm an unbounded limit.
+STREAK_TIERS = [(7, 3), (3, 2), (1, 0)]  # (min_days, bonus) — first match wins
+
+
+def streak_bonus(count: int) -> int:
+    """Bonus daily watches for the current streak length."""
+    for min_days, bonus in STREAK_TIERS:
+        if count >= min_days:
+            return bonus
+    return 0
+
+
+def _today_str() -> str:
+    from datetime import datetime
+    return datetime.utcnow().date().isoformat()
+
+
+def bump_streak(user_id: int) -> dict:
+    """Record activity for today. Call ONCE per successful watch.
+
+    Returns {'streak': int, 'best': int, 'bonus': int, 'new_record': bool}.
+    Pure bookkeeping — never raises into the caller on a weird date.
+    """
+    try:
+        ensure_user_exists(user_id)
+        today = _today_str()
+        ph = "%s" if _using_pg else "?"
+        row = _fetchone(
+            f"SELECT streak_count, streak_last_date, streak_best FROM user_settings WHERE user_id = {ph}",
+            (user_id,),
+        )
+        count = (row["streak_count"] or 0) if row else 0
+        last = (row["streak_last_date"] or "") if row else ""
+        best = (row["streak_best"] or 0) if row else 0
+
+        if last == today:
+            new_count, new_best = count, best
+        else:
+            from datetime import date, timedelta
+            try:
+                yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+            except Exception:
+                yesterday = ""
+            new_count = count + 1 if last == yesterday else 1
+            new_best = max(best, new_count)
+            _execute(
+                f"UPDATE user_settings SET streak_count = {ph}, streak_last_date = {ph}, streak_best = {ph} WHERE user_id = {ph}",
+                (new_count, today, new_best, user_id),
+            )
+        return {
+            "streak": new_count,
+            "best": new_best,
+            "bonus": streak_bonus(new_count),
+            "new_record": new_count > best and new_count > 1,
+        }
+    except Exception:
+        return {"streak": 0, "best": 0, "bonus": 0, "new_record": False}
+
+
+def get_user_streak(user_id: int) -> dict:
+    """Read-only streak info for UI display."""
+    row = _fetchone(
+        "SELECT streak_count, streak_last_date, streak_best FROM user_settings WHERE user_id = %s" if _using_pg else
+        "SELECT streak_count, streak_last_date, streak_best FROM user_settings WHERE user_id = ?",
+        (user_id,),
+    )
+    if not row:
+        return {"streak": 0, "best": 0, "bonus": 0, "active_today": False}
+    streak = row["streak_count"] or 0
+    last = row["streak_last_date"] or ""
+    today = _today_str()
+    active_today = last == today
+    return {"streak": streak, "best": row["streak_best"] or 0, "bonus": streak_bonus(streak), "active_today": active_today}
+
+
+def streak_bar(days: int, width: int = 7) -> str:
+    """Visual streak indicator for the current tier window."""
+    filled = min(days, width)
+    return f"[{'▮' * filled}{'▯' * (width - filled)}]"
+
+
 # ── Premium & Core Users ───────────────────────────────────────────────────
 
 def is_user_premium(user_id: int) -> bool:
@@ -942,7 +1055,10 @@ def get_user_quota(user_id: int) -> dict:
     if str(q_date) != today:
         ph = "%s" if _using_pg else "?"
         leftover = max(0, limit - used)
-        new_limit = leftover + 5
+        # Streak bonus rides on top of the leftover+5 accumulator — never
+        # wipes eaten referral earnings, just adds upside for active users.
+        bonus = streak_bonus(get_user_streak(user_id)["streak"])
+        new_limit = leftover + 5 + bonus
         _execute(
             f"UPDATE user_settings SET quota_used = 0, quota_limit = {ph}, quota_date = {ph} WHERE user_id = {ph}",
             (new_limit, today, user_id)

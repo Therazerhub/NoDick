@@ -59,6 +59,9 @@ from nodick.db import (
     is_user_premium,
     get_user_quota,
     increment_quota,
+    bump_streak,
+    get_user_streak,
+    streak_bar,
     grant_premium,
     revoke_premium,
     list_premium_users,
@@ -432,6 +435,26 @@ async def _enrich_and_send(
     increment_view(video_id)
     chat_id = update.effective_chat.id
 
+    # Watch streak — update for every user that actually lands here (a video
+    # was sent). Single choke point so random/play/redirect all count once.
+    if update.effective_user:
+        streak = bump_streak(update.effective_user.id)
+
+        # Celebrate a new personal best + confirmation it saved.
+        # Reply to the sent video lazily — no need to force into caption.
+        if streak["new_record"] and streak["streak"] >= 3:
+            try:
+                new_record_msg = f"🔥 *{streak['streak']}-day streak!* New personal best.\n"
+                if not is_user_premium(update.effective_user.id):
+                    new_record_msg += f"⚡ Streak active → *+{streak['bonus']}* bonus watches daily."
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"{new_record_msg}",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception as e:
+                log.debug("Did not send streak milestone message: %s", e)
+    
     meta = get_video_metadata(video_id)
     row_dict = dict(row)
     row_tags = [t for t in (row_dict.get("tags") or "").split(",") if t]
@@ -1148,13 +1171,18 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if action == "autopostnow":
         from nodick.services.poster import send_auto_post
-        channel_id = get_bot_setting("auto_post_channel", "-1004422688523")
-        await q.edit_message_text(f"🚀 Triggering post to {channel_id}...", reply_markup=back())
-        success = await send_auto_post(context.bot, channel_id)
-        if success:
-            await context.bot.send_message(update.effective_chat.id, "✅ Auto-Post successfully dropped in the channel.")
+        await q.edit_message_text("🚀 Triggering post to all channels...", reply_markup=back())
+        successes = await send_auto_post(context.bot, force=True)
+        if successes:
+            await context.bot.send_message(
+                update.effective_chat.id,
+                f"✅ Auto-Posted to {successes} channel(s)."
+            )
         else:
-            await context.bot.send_message(update.effective_chat.id, "❌ Failed. Make sure bot is admin in the channel and has access to fetch videos.")
+            await context.bot.send_message(
+                update.effective_chat.id,
+                "❌ Failed or cooldown active. Check bot is admin in all channels."
+            )
         return
 
     context.user_data["waiting_for_setting"] = action
@@ -1166,6 +1194,8 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "refbonus": "Send me the new *Referral Bonus* amount (e.g. `5`):",
         "logschannel": "Send me the new *Logs Channel ID* (e.g. `-1001234567890`):",
         "forcejoin": "Send me the *Channel/Group IDs* separated by spaces (e.g. `-100123 -100456`):\n\n_(Send `clear` to disable Force Join)_",
+        "autopost_cooldown": "Send me the new *Auto-Post Cooldown* in hours (e.g. `6`):\n\nHow long to wait between auto-posts.",
+        "autopost_channels": "Send me the *Channel IDs* to auto-post to, separated by spaces (e.g. `-100123 -100456`):\n\n_(Send `clear` to use the default channel)_",
         "coadmins": "Send me the *Admin IDs* separated by spaces (e.g. `12345 67890`):\n\n_(Send `clear` to remove all extra admins)_",
         "grantpremium": "Send me the *User IDs* you want to grant 30-Day Premium to, separated by spaces (e.g. `12345 67890`):",
         "revokepremium": "Send me the *User IDs* you want to revoke Premium from, separated by spaces:",
@@ -1772,6 +1802,43 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 set_bot_setting("refer_gif", text)
                 msg = "✅ Referral GIF updated!"
+        elif setting == "autopost_cooldown":
+            try:
+                n = int(text)
+                if n < 0 or n > 168:
+                    msg = "❌ Cooldown must be 0-168 hours (0 = no cooldown)."
+                else:
+                    set_bot_setting("auto_post_cooldown", str(n))
+                    msg = f"✅ Auto-post cooldown set to {n} hours."
+            except ValueError:
+                msg = "❌ Must be a number in hours."
+        elif setting == "autopost_channels":
+            import json as _json
+            if text.lower() == "clear":
+                set_bot_setting("auto_post_channels", "")
+                msg = "✅ Auto-post channels cleared (using default channel)."
+            else:
+                ids = text.split()
+                channels = []
+                failed = []
+                for cid in ids:
+                    try:
+                        chat_id = int(cid)
+                        chat = await context.bot.get_chat(chat_id)
+                        channels.append({
+                            "id": chat_id,
+                            "name": chat.title or str(chat_id),
+                            "url": chat.invite_link or "",
+                        })
+                    except Exception as e:
+                        failed.append(f"`{cid}`: {str(e)}")
+                if channels:
+                    set_bot_setting("auto_post_channels", _json.dumps(channels))
+                    msg = f"✅ Saved {len(channels)} auto-post channel(s): " + ", ".join(f"`{c['name']}`" for c in channels)
+                else:
+                    msg = "❌ No valid channels saved. Make sure the bot is a member/admin."
+                if failed:
+                    msg += "\n\n⚠️ Failed:\n" + "\n".join(failed)
         
         await update.message.reply_text(msg, reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
         return
@@ -2373,7 +2440,22 @@ async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bar = f"[{'▮' * filled}{'▯' * empty}]"
         text += f"Daily Quota: `{bar}` {quota['remaining']}/{quota['limit']}\n"
     text += f"Referrals: {ref_count}\n"
-    
+
+    # Streak section — always shown (0 days is a valid starting state)
+    streak = get_user_streak(user_id)
+    if not premium:
+        # Daily bonus tier for non-premium users
+        tier_desc = {0: "No bonus", 2: "+2 bonus watches", 3: "+3 bonus watches"}.get(streak["bonus"], f"+{streak['bonus']} bonus watches")
+    else:
+        tier_desc = "Unlimited (Premium)"
+    bar7 = streak_bar(streak["streak"], 7)
+    text += (
+        f"\n🔥 *Watch Streak*\n"
+        f"{bar7} *{streak['streak']}* days"
+        f"  |  Best: *{streak['best']}*\n"
+        f"{tier_desc}\n"
+    )
+
     from nodick.telegram.keyboards import account_keyboard
     await _replace_with_text(update, context, text, account_keyboard(user_id))
 
@@ -2520,9 +2602,8 @@ def build_application() -> Application:
         from nodick.db import get_bot_setting
         enabled = get_bot_setting("auto_post_enabled", "0")
         if enabled == "1":
-            channel_id = get_bot_setting("auto_post_channel", "-1004422688523")
             from nodick.services.poster import send_auto_post
-            await send_auto_post(context.bot, channel_id)
+            await send_auto_post(context.bot)
 
     if app.job_queue:
         app.job_queue.run_repeating(auto_post_job, interval=3600, first=60)
