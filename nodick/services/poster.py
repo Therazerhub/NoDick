@@ -25,11 +25,12 @@ log = logging.getLogger(__name__)
 
 def fetch_scene_image(scene_id: str) -> Optional[bytes]:
     if not settings.stash_configured:
+        log.warning("poster: STASHDB_API_KEY not configured — skipping StashDB art")
         return None
     query = """
     query FindScene($id: ID!) {
       findScene(id: $id) {
-        images { url }
+        images { url width height }
       }
     }
     """
@@ -40,27 +41,56 @@ def fetch_scene_image(scene_id: str) -> Optional[bytes]:
         )
         scene = (data or {}).get("findScene") or {}
         images = scene.get("images") or []
-        if images:
-            resp = requests.get(images[0]["url"], timeout=10)
-            if resp.status_code == 200:
-                return resp.content
+        if not images:
+            log.warning("poster: scene %s has no StashDB images", scene_id)
+            return None
+        # Pick the LARGEST image (first entry can be a tiny thumbnail)
+        best = max(
+            images,
+            key=lambda im: (im.get("width") or 0) * (im.get("height") or 0),
+        )
+        url = best.get("url")
+        if not url:
+            return None
+        # CDNs (and stashdb itself) reject requests without a UA
+        resp = requests.get(
+            url, timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; NoDickPoster/1.0)"},
+        )
+        if resp.status_code == 200 and resp.content:
+            log.info("poster: StashDB image OK (%s bytes, %sx%s)",
+                     len(resp.content), best.get("width"), best.get("height"))
+            return resp.content
+        log.warning("poster: StashDB image HTTP %s for scene %s", resp.status_code, scene_id)
     except Exception as e:
         log.error("Failed to fetch scene image for %s: %s", scene_id, e)
     return None
 
 
 def create_blurred_thumbnail(image_bytes: bytes) -> bytes:
-    """Heavy Gaussian blur + darken for SFW channel safety."""
+    """Heavy Gaussian blur + darken for SFW channel safety.
+
+    Blur radius scales with image size: GaussianBlur(50) is sensible on a
+    1200px+ StashDB image, but on a small (200-400px) Telegram thumbnail it
+    pushes everything to a uniform gray wall. We scale down so the result
+    keeps enough structure to look like an intentional teaser, not a bug.
+    """
     if not HAS_PIL:
         return image_bytes
     try:
         from PIL import Image, ImageFilter
         with Image.open(io.BytesIO(image_bytes)) as img:
             img = img.convert("RGB")
-            blurred = img.filter(ImageFilter.GaussianBlur(50))
+            w, h = img.size
+            long_edge = max(w, h)
+            # target radius ~ 12px per 100px of the long edge, capped at 30
+            radius = min(30, max(8, int(long_edge / 100.0 * 12)))
+            blurred = img.filter(ImageFilter.GaussianBlur(radius))
             darkened = Image.eval(blurred, lambda x: int(x * 0.7))
             out = io.BytesIO()
             darkened.save(out, format="JPEG", quality=85)
+            log.info("poster: blurred %sx%s at radius %s → %s bytes",
+                     w, h, radius, len(out.getvalue()))
             return out.getvalue()
     except Exception as e:
         log.error("Failed to blur image: %s", e)
