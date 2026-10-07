@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
@@ -21,7 +23,7 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("⭐ Favorites", callback_data="favorites"),
-            InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer"),
+            InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer"),
         ]
     ]
     
@@ -61,11 +63,25 @@ def back() -> InlineKeyboardMarkup:
 def account_keyboard(user_id: int) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("📊 My Stats", callback_data="my_stats")],
+        [InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer")],
     ]
     if not is_user_premium(user_id):
         rows.append([InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")])
     rows.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
+
+
+def referral_keyboard(ref_link: str, share_text: str) -> InlineKeyboardMarkup:
+    """Native Telegram share controls for the referral growth loop."""
+    share_url = (
+        "https://t.me/share/url?url="
+        f"{quote(ref_link, safe='')}&text={quote(share_text, safe='')}"
+    )
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📤 Share Invite", url=share_url)],
+        [InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
+    ])
 
 
 def video_actions(

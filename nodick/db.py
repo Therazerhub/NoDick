@@ -343,6 +343,14 @@ def _init_sqlite():
         created_by INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS referrals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        referrer_id INTEGER NOT NULL,
+        referred_id INTEGER NOT NULL UNIQUE,
+        bonus_granted INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """
     import sqlite3
 
@@ -392,6 +400,19 @@ def _init_sqlite():
                     conn.execute(sql)
                 except sqlite3.OperationalError:
                     pass
+
+        # Retroactive migration: ensure referrals table exists (added in 2025-05)
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS referrals ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "referrer_id INTEGER NOT NULL,"
+                "referred_id INTEGER NOT NULL UNIQUE,"
+                "bonus_granted INTEGER DEFAULT 0,"
+                "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+        except sqlite3.OperationalError:
+            pass
 
 
 # ── Video CRUD ──────────────────────────────────────────────────────────
@@ -1127,7 +1148,8 @@ def list_premium_users() -> list[dict]:
     return [dict(r) for r in rows]
 
 def record_referral(referrer_id: int, referred_id: int, bonus: int = 5) -> bool:
-    if referrer_id == referred_id:
+    """Credit one real, first-time referral; self and unknown referrers are rejected."""
+    if referrer_id == referred_id or bonus < 1 or not user_exists(referrer_id):
         return False
     ph = "%s" if _using_pg else "?"
     try:
@@ -1141,7 +1163,7 @@ def record_referral(referrer_id: int, referred_id: int, bonus: int = 5) -> bool:
                 "INSERT INTO referrals (referrer_id, referred_id, bonus_granted) VALUES (?, ?, ?)",
                 (referrer_id, referred_id, bonus)
             )
-        
+
         _execute(
             f"UPDATE user_settings SET quota_limit = quota_limit + {ph} WHERE user_id = {ph}",
             (bonus, referrer_id)
@@ -1152,12 +1174,23 @@ def record_referral(referrer_id: int, referred_id: int, bonus: int = 5) -> bool:
         )
         return True
     except Exception:
-         return False
+        return False
+
 
 def get_referral_count(user_id: int) -> int:
     ph = "%s" if _using_pg else "?"
     row = _fetchone(f"SELECT COUNT(*) as c FROM referrals WHERE referrer_id = {ph}", (user_id,))
     return row['c'] if _using_pg and row else (row[0] if row else 0)
+
+
+def get_referral_bonus_total(user_id: int) -> int:
+    """Total bonus watches actually credited from successful referrals."""
+    ph = "%s" if _using_pg else "?"
+    row = _fetchone(
+        f"SELECT COALESCE(SUM(bonus_granted), 0) as total FROM referrals WHERE referrer_id = {ph}",
+        (user_id,),
+    )
+    return int(row["total"] if _using_pg and row else (row[0] if row else 0))
 
 def get_all_user_ids() -> list[int]:
     rows = _fetchall("SELECT user_id FROM user_settings")

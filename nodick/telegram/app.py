@@ -67,6 +67,7 @@ from nodick.db import (
     list_premium_users,
     record_referral,
     get_referral_count,
+    get_referral_bonus_total,
     get_all_user_ids,
     user_exists,
     get_user_count,
@@ -86,6 +87,7 @@ from nodick.telegram.keyboards import (
     settings_keyboard,
     video_actions,
     account_keyboard,
+    referral_keyboard,
     force_join_keyboard,
     ad_button_keyboard,
 )
@@ -556,22 +558,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if context.args and context.args[0].startswith("ref_"):
                 try:
                     referrer_id = int(context.args[0].replace("ref_", ""))
-                    bonus = int(get_bot_setting("referral_bonus", "10"))
+                    bonus = max(1, int(get_bot_setting("referral_bonus", "10") or "10"))
                     if record_referral(referrer_id, user.id, bonus):
                         refs = get_referral_count(referrer_id)
-                        if refs > 0 and refs % 10 == 0:
+                        next_milestone = ((refs // 10) + 1) * 10
+                        needed = next_milestone - refs
+                        if refs % 10 == 0:
                             grant_premium(referrer_id, 30)
-                            await _log_event(context, f"✅ New referral: `{user.id}` joined via `{referrer_id}`. 🎁 Referrer hit {refs} and got 30 days Premium!")
-                            try:
-                                await context.bot.send_message(
-                                    chat_id=referrer_id, 
-                                    text=f"🎉 *Congratulations!*\n\nYou just hit {refs} referrals! As a reward, you've unlocked *1 Month of Premium*! 👑\n\nEnjoy the unrestricted access.",
-                                    parse_mode=ParseMode.MARKDOWN
-                                )
-                            except Exception:
-                                pass
+                            await _log_event(context, f"✅ Referral confirmed: `{user.id}` joined via `{referrer_id}`. 🎁 Referrer hit {refs} and got 30 days Premium!")
+                            reward_text = (
+                                f"🎉 *Premium unlocked!*\n\n"
+                                f"You hit *{refs} successful invites* and earned *1 Month of Premium*. 👑\n\n"
+                                f"Your next Premium drop is at *{refs + 10}* invites."
+                            )
                         else:
-                            await _log_event(context, f"✅ New referral: `{user.id}` joined via `{referrer_id}`")
+                            await _log_event(context, f"✅ Referral confirmed: `{user.id}` joined via `{referrer_id}` (+{bonus} watches)")
+                            reward_text = (
+                                f"🎁 *Referral confirmed!*\n\n"
+                                f"You earned *+{bonus} bonus watches*.\n"
+                                f"Only *{needed} more* until your next month of Premium at *{next_milestone} invites*."
+                            )
+                        try:
+                            await context.bot.send_message(
+                                chat_id=referrer_id,
+                                text=reward_text,
+                                parse_mode=ParseMode.MARKDOWN,
+                            )
+                        except Exception:
+                            pass
                 except ValueError:
                     pass
             username = f"@{user.username}" if user.username else "No username"
@@ -597,7 +611,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "👑 Or grab Premium for unlimited access\n"
                     )
                     markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer")],
+                        [InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer")],
                         [InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")],
                         [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
                     ])
@@ -682,7 +696,7 @@ async def random_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "👑 Or grab Premium for unlimited access\n"
             )
             markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer")],
+                [InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer")],
                 [InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")],
                 [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
             ])
@@ -1000,7 +1014,7 @@ async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "👑 Or grab Premium for unlimited access\n"
             )
             markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer")],
+                [InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer")],
                 [InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")],
                 [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
             ])
@@ -2392,6 +2406,7 @@ async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     quota = get_user_quota(user_id)
     ref_count = get_referral_count(user_id)
+    referral_bonus_total = get_referral_bonus_total(user_id)
     premium = is_user_premium(user_id)
     
     status = "👑 Premium" if premium else "🆓 Free"
@@ -2409,7 +2424,10 @@ async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         empty = total_blocks - filled
         bar = f"[{'▮' * filled}{'▯' * empty}]"
         text += f"Daily Quota: `{bar}` {quota['remaining']}/{quota['limit']}\n"
-    text += f"Referrals: {ref_count}\n"
+    text += (
+        f"🎁 Referrals: {ref_count}\n"
+        f"⚡ Referral bonus earned: +{referral_bonus_total}\n"
+    )
 
     # Streak section — always shown (0 days is a valid starting state)
     streak = get_user_streak(user_id)
@@ -2430,51 +2448,66 @@ async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _replace_with_text(update, context, text, account_keyboard(user_id))
 
 async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+    """Show a share-ready referral card for callbacks and /refer alike."""
+    if update.callback_query:
+        await update.callback_query.answer()
+
     user_id = update.effective_user.id
     ref_count = get_referral_count(user_id)
+    bonus_total = get_referral_bonus_total(user_id)
     bot_username = (await context.bot.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-    bonus = int(get_bot_setting("referral_bonus", "10"))
-    
-    progress = ref_count % 10
-    needed = 10 - progress
-    
-    text = (
-        f"🔗 *Invite Friends, Get Free Bot Premium*\n\n"
-        f"Get instant access to thousands of premium, organized adult videos—no ads, no friction. Just instant streaming directly in Telegram. 💦\n\n"
-        f"Want unlimited access? Invite your friends into the club:\n"
-        f"• Get *+{bonus} free watches* instantly per referral.\n"
-        f"• Unlock *1 Full Month of Premium* for every 10 referrals!\n"
-        f"  _(You only need {needed} more for your next Premium drop)_\n\n"
-        f"👉 [Click here to unlock your free access]({ref_link})\n\n"
-        f"👥 Friends referred so far: *{ref_count}*\n\n"
-        f"👇 *Forward this message to your friends to invite them!*"
+    try:
+        bonus = max(1, int(get_bot_setting("referral_bonus", "10") or "10"))
+    except (TypeError, ValueError):
+        bonus = 10
+
+    milestone = 10
+    tier_progress = ref_count % milestone
+    next_milestone = ((ref_count // milestone) + 1) * milestone
+    needed = next_milestone - ref_count
+    filled = 10 if tier_progress == 0 and ref_count else tier_progress
+    progress_bar = f"[{'▮' * filled}{'▯' * (milestone - filled)}]"
+    share_text = (
+        "I found an adult content bot with instant streaming, no ads, and premium videos. "
+        f"Join through my link and we both get perks: {ref_link}"
     )
-    
+    text = (
+        "🎁 *Invite & Earn*\n\n"
+        f"Invite friends to this adult content bot. Each *new* user who starts through "
+        f"your link gives you *+{bonus} bonus watches* instantly.\n\n"
+        f"👑 *Premium milestone*\n"
+        f"{progress_bar} *{tier_progress}/{milestone}* toward your next month of Premium\n"
+        f"Only *{needed} more* referral{'s' if needed != 1 else ''} until *{next_milestone} total*.\n\n"
+        f"👥 Successful invites: *{ref_count}*\n"
+        f"⚡ Bonus watches earned: *+{bonus_total}*\n\n"
+        f"🔗 *Your personal link*\n`{ref_link}`\n\n"
+        "Tap *📤 Share Invite* to send a ready-made Telegram invite. "
+        "Only first-time users count — no loopholes, sadly."
+    )
+    markup = referral_keyboard(ref_link, share_text)
     refer_gif = get_bot_setting("refer_gif", "")
-    
+
     if refer_gif:
-        q = update.callback_query
+        if update.callback_query:
+            try:
+                await update.callback_query.message.delete()
+            except Exception:
+                pass
         try:
-            await q.message.delete()
-        except Exception:
-            pass
-            
-        try:
-            await context.bot.send_animation(
+            return await context.bot.send_animation(
                 chat_id=update.effective_chat.id,
                 animation=refer_gif,
                 caption=text,
-                reply_markup=back(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=markup,
+                parse_mode=ParseMode.MARKDOWN,
             )
-            return
         except Exception:
-            pass # fallback to text below
-            
-    await _replace_with_text(update, context, text, back())
+            log.debug("Referral GIF failed; falling back to text", exc_info=True)
+
+    if update.callback_query:
+        return await _replace_with_text(update, context, text, markup)
+    return await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
 async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
