@@ -305,7 +305,7 @@ async def _send_video_ref(
         try:
             if file_ref.startswith("user_ref:"):
                 _, channel_id, message_id = file_ref.split(":", 2)
-                await bot.copy_message(
+                return await bot.copy_message(
                     chat_id=chat_id,
                     from_chat_id=int(channel_id),
                     message_id=int(message_id),
@@ -313,10 +313,10 @@ async def _send_video_ref(
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=reply_markup,
                 )
-            elif file_ref.startswith("channel_ref:"):
+            if file_ref.startswith("channel_ref:"):
                 # Stored by the Telethon scanner: channel_ref:channel_id:message_id
                 _, channel_id, message_id = file_ref.split(":", 2)
-                await bot.copy_message(
+                return await bot.copy_message(
                     chat_id=chat_id,
                     from_chat_id=int(channel_id),
                     message_id=int(message_id),
@@ -324,15 +324,13 @@ async def _send_video_ref(
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=reply_markup,
                 )
-            else:
-                await bot.send_video(
-                    chat_id=chat_id,
-                    video=file_ref,
-                    caption=caption,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=reply_markup,
-                )
-            return
+            return await bot.send_video(
+                chat_id=chat_id,
+                video=file_ref,
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup,
+            )
         except RetryAfter as e:
             if attempt >= max_retries:
                 raise
@@ -346,34 +344,6 @@ async def _send_video_ref(
             log.error("Failed to send video ref %s: %s", file_ref[:30], e)
             # Try to notify user if we have a callback query context
             raise
-
-    # For auto-delete, we need to return the message or message ID
-    if file_ref.startswith("user_ref:") or file_ref.startswith("channel_ref:"):
-        _, channel_id, message_id = file_ref.split(":", 2)
-        try:
-            msg_id = await bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=int(channel_id),
-                message_id=int(message_id),
-                caption=caption,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup,
-            )
-            return msg_id
-        except Exception:
-            return None
-    else:
-        try:
-            msg = await bot.send_video(
-                chat_id=chat_id,
-                video=file_ref,
-                caption=caption,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup,
-            )
-            return msg
-        except Exception:
-            return None
 
 
 def _caption_from_cache(
