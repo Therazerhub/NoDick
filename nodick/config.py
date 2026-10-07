@@ -31,7 +31,10 @@ class Settings:
 
     # Bot
     bot_token: str = os.getenv("BOT_TOKEN", "").strip()
-    admin_id: int = _int_env("ADMIN_ID")
+    # Fallback to the owner's ID if ADMIN_ID is missing or blank in the env.
+    # Prevents a stray/blank dashboard ADMIN_ID from silently stripping admin
+    # (dashboard env overrides render.yaml — a recurring NoDick deploy trap).
+    admin_id: int = _int_env("ADMIN_ID") or 6001922744
 
     # Telethon
     telegram_api_id: int = _int_env("TELEGRAM_API_ID")
