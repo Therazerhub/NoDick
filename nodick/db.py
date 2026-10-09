@@ -164,7 +164,10 @@ def _init_pg():
                 quota_date TEXT,
                 streak_count INTEGER DEFAULT 0,
                 streak_last_date TEXT,
-                streak_best INTEGER DEFAULT 0
+                streak_best INTEGER DEFAULT 0,
+                welcome_variant TEXT,
+                welcome_exposed INTEGER DEFAULT 0,
+                welcome_converted INTEGER DEFAULT 0
             )
         """)
         cur.execute("""
@@ -249,6 +252,9 @@ def _init_pg():
             "streak_count": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS streak_count INTEGER DEFAULT 0",
             "streak_last_date": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS streak_last_date TEXT",
             "streak_best": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS streak_best INTEGER DEFAULT 0",
+            "welcome_variant": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS welcome_variant TEXT",
+            "welcome_exposed": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS welcome_exposed INTEGER DEFAULT 0",
+            "welcome_converted": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS welcome_converted INTEGER DEFAULT 0",
         }
         for col, sql in us_migrations.items():
             if col not in us_existing:
@@ -320,7 +326,10 @@ def _init_sqlite():
         quota_date TEXT,
         streak_count INTEGER DEFAULT 0,
         streak_last_date TEXT,
-        streak_best INTEGER DEFAULT 0
+        streak_best INTEGER DEFAULT 0,
+        welcome_variant TEXT,
+        welcome_exposed INTEGER DEFAULT 0,
+        welcome_converted INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS bot_settings (
@@ -393,6 +402,9 @@ def _init_sqlite():
             "streak_count": "ALTER TABLE user_settings ADD COLUMN streak_count INTEGER DEFAULT 0",
             "streak_last_date": "ALTER TABLE user_settings ADD COLUMN streak_last_date TEXT",
             "streak_best": "ALTER TABLE user_settings ADD COLUMN streak_best INTEGER DEFAULT 0",
+            "welcome_variant": "ALTER TABLE user_settings ADD COLUMN welcome_variant TEXT",
+            "welcome_exposed": "ALTER TABLE user_settings ADD COLUMN welcome_exposed INTEGER DEFAULT 0",
+            "welcome_converted": "ALTER TABLE user_settings ADD COLUMN welcome_converted INTEGER DEFAULT 0",
         }
         for col, sql in us_migrations.items():
             if col not in us_existing:
@@ -872,6 +884,70 @@ def ensure_user_exists(user_id: int) -> None:
         )
 
 
+def get_welcome_variant(user_id: int) -> str | None:
+    """Return an assigned onboarding variant without enrolling returning users."""
+    ph = "%s" if _using_pg else "?"
+    row = _fetchone(
+        f"SELECT welcome_variant FROM user_settings WHERE user_id = {ph}",
+        (user_id,),
+    )
+    variant = row["welcome_variant"] if _using_pg and row else (row[0] if row else None)
+    return variant if variant in ("A", "B") else None
+
+
+def get_or_assign_welcome_variant(user_id: int) -> str:
+    """Return a stable A/B onboarding variant for this user."""
+    ensure_user_exists(user_id)
+    ph = "%s" if _using_pg else "?"
+    variant = get_welcome_variant(user_id)
+    if variant:
+        return variant
+
+    # Stable, evenly distributed assignment without Python's randomized hash().
+    variant = "A" if user_id % 2 == 0 else "B"
+    _execute(
+        f"UPDATE user_settings SET welcome_variant = {ph} WHERE user_id = {ph}",
+        (variant, user_id),
+    )
+    return variant
+
+
+def mark_welcome_exposure(user_id: int) -> None:
+    """Record that the assigned welcome variant was actually rendered."""
+    ph = "%s" if _using_pg else "?"
+    _execute(
+        f"UPDATE user_settings SET welcome_exposed = 1 WHERE user_id = {ph} AND welcome_variant IS NOT NULL",
+        (user_id,),
+    )
+
+
+def mark_welcome_conversion(user_id: int) -> None:
+    """Mark the first delivered video after an actual welcome exposure."""
+    ph = "%s" if _using_pg else "?"
+    _execute(
+        f"UPDATE user_settings SET welcome_converted = 1 WHERE user_id = {ph} AND welcome_exposed = 1",
+        (user_id,),
+    )
+
+
+def get_welcome_experiment_stats() -> dict[str, dict[str, int]]:
+    """Return welcome exposures and first-watch conversions by variant."""
+    rows = _fetchall(
+        "SELECT welcome_variant, COUNT(*) AS exposed, "
+        "COALESCE(SUM(welcome_converted), 0) AS converted "
+        "FROM user_settings WHERE welcome_variant IN ('A', 'B') AND welcome_exposed = 1 "
+        "GROUP BY welcome_variant"
+    )
+    result = {"A": {"exposed": 0, "converted": 0}, "B": {"exposed": 0, "converted": 0}}
+    for row in rows:
+        variant = row["welcome_variant"]
+        result[variant] = {
+            "exposed": int(row["exposed"]),
+            "converted": int(row["converted"]),
+        }
+    return result
+
+
 def user_setting(user_id: int, key: str) -> Optional[bool]:
     if key == "show_action_buttons":
         row = _fetchone(
@@ -1191,6 +1267,36 @@ def get_referral_bonus_total(user_id: int) -> int:
         (user_id,),
     )
     return int(row["total"] if _using_pg and row else (row[0] if row else 0))
+
+def get_referral_social_proof(user_id: int) -> dict[str, int]:
+    """Referral activity used for non-identifying social proof in the invite card."""
+    ph = "%s" if _using_pg else "?"
+    if _using_pg:
+        today_row = _fetchone(
+            f"SELECT COUNT(*) AS c FROM referrals WHERE referrer_id = {ph} AND created_at::date = CURRENT_DATE",
+            (user_id,),
+        )
+        global_today_row = _fetchone(
+            "SELECT COUNT(*) AS c FROM referrals WHERE created_at::date = CURRENT_DATE"
+        )
+    else:
+        today_row = _fetchone(
+            f"SELECT COUNT(*) AS c FROM referrals WHERE referrer_id = {ph} AND date(created_at) = date('now')",
+            (user_id,),
+        )
+        global_today_row = _fetchone(
+            "SELECT COUNT(*) AS c FROM referrals WHERE date(created_at) = date('now')"
+        )
+    leader_row = _fetchone(
+        "SELECT COALESCE(MAX(refs), 0) AS c FROM "
+        "(SELECT COUNT(*) AS refs FROM referrals GROUP BY referrer_id) leaders"
+    )
+    return {
+        "yours_today": int(today_row["c"] if today_row else 0),
+        "global_today": int(global_today_row["c"] if global_today_row else 0),
+        "leader_total": int(leader_row["c"] if leader_row else 0),
+    }
+
 
 def get_all_user_ids() -> list[int]:
     rows = _fetchall("SELECT user_id FROM user_settings")

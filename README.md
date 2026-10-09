@@ -51,7 +51,11 @@
 
 **🎭 Performer Search** — Query StashDB's performer database directly from Telegram.
 
-**🎁 Invite & Earn** — A first-class growth loop on the main menu and Account screen. Every new user who starts through your personal Telegram link instantly grants configurable bonus watches; each 10 successful invites unlocks 30 days of Premium. The referral card includes a live progress bar, bonus total, milestone countdown, direct native Telegram share button, and referral confirmation notifications.
+**🎁 Invite & Earn** — A first-class growth loop on the main menu and Account screen. Every new user who starts through your personal Telegram link instantly grants configurable bonus watches; each 10 successful invites unlocks 30 days of Premium. The referral card includes a live progress bar, bonus total, milestone countdown, daily invite activity, leaderboard social proof, direct native Telegram share button, and referral confirmation notifications.
+
+**🧪 Welcome A/B Testing** — New users are split deterministically between the original welcome and a conversion-focused quota/video-count variant. The admin Stats screen reports real welcome exposures and first-watch conversion rates for both variants.
+
+**📤 Viral Video Sharing** — Every delivered video includes a native Telegram share button. Shared links reopen that exact video and automatically credit the sender when a first-time user joins.
 
 **🔥 Watch Streaks** — Watch something daily, build a streak. Consecutive days earn bonus daily watches:
 ```

@@ -68,6 +68,12 @@ from nodick.db import (
     record_referral,
     get_referral_count,
     get_referral_bonus_total,
+    get_referral_social_proof,
+    get_or_assign_welcome_variant,
+    get_welcome_variant,
+    get_welcome_experiment_stats,
+    mark_welcome_exposure,
+    mark_welcome_conversion,
     get_all_user_ids,
     user_exists,
     get_user_count,
@@ -130,13 +136,56 @@ except ImportError as e:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-WELCOME_MSG = """*Welcome to your new favorite addiction.* 🖤
+WELCOME_MSG_A = """*Welcome to your new favorite addiction.* 🖤
 
-I serve up an endless, organized stash of premium adult videos directly in your chat. No ads, no pop-ups, no bullshit. Just the good stuff, hand-picked and ready to stream instantly. 💦
+I serve up an endless, organized collection of premium adult videos directly in your chat. No ads, no pop-ups, no bullshit. Just the good stuff, hand-picked and ready to stream instantly. 💦
 
 Hit a button below to get started. 😈
 
 ⚡ _Architected by_ [The Razer](tg://user?id=6001922744) 🔥"""
+
+WELCOME_MSG_B = """*Your private stream is ready.* 🖤
+
+🔥 *{video_count:,}+ videos unlocked*
+⚡ *5 free watches waiting*
+🚫 No ads. No pop-ups. Instant streaming.
+
+Tap *🎲 Surprise Me* and start watching. 😈
+
+⚡ _Architected by_ [The Razer](tg://user?id=6001922744) 🔥"""
+
+
+def _welcome_message(user_id: int | None) -> str:
+    """Return the user's stable onboarding experiment variant."""
+    if user_id is None:
+        return WELCOME_MSG_A
+    variant = get_welcome_variant(user_id)
+    if variant:
+        mark_welcome_exposure(user_id)
+    if variant == "B":
+        return WELCOME_MSG_B.format(video_count=db_video_count())
+    return WELCOME_MSG_A
+
+
+def _parse_start_payload(payload: str | None) -> tuple[int | None, int | None]:
+    """Return (video_id, referrer_id) for supported Telegram deep links."""
+    if not payload:
+        return None, None
+    try:
+        if payload.startswith("ref_"):
+            referrer_id = int(payload.removeprefix("ref_"))
+            return (None, referrer_id) if referrer_id > 0 else (None, None)
+        if payload.startswith("vid_"):
+            video_id = int(payload.removeprefix("vid_"))
+            return (video_id, None) if video_id > 0 else (None, None)
+        if payload.startswith("sv_"):
+            _, raw_video_id, raw_referrer_id = payload.split("_", 2)
+            video_id, referrer_id = int(raw_video_id), int(raw_referrer_id)
+            if video_id > 0 and referrer_id > 0:
+                return video_id, referrer_id
+    except (ValueError, TypeError):
+        pass
+    return None, None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -223,6 +272,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     await q.answer("✅ Verified! Welcome in… 😏")
     markup = main_menu(user_id)
+    welcome_text = _welcome_message(user_id)
     welcome_gif = get_bot_setting("welcome_gif", "")
     
     if welcome_gif:
@@ -232,7 +282,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await context.bot.send_animation(
                 chat_id=q.message.chat_id,
                 animation=welcome_gif,
-                caption=WELCOME_MSG,
+                caption=welcome_text,
                 reply_markup=markup,
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -240,7 +290,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             pass # fallback to edit text
             
-    await q.edit_message_text(WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    await q.edit_message_text(welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
 # ── In-Bot Ad system ──────────────────────────────────────────────────────
 
@@ -480,6 +530,14 @@ async def _enrich_and_send(
     show_rename = bool(
         meta and meta.get("stashdb_confidence", 0) and meta["stashdb_confidence"] >= 0.9
     )
+    bot_username = context.bot_data.get("bot_username")
+    if not bot_username:
+        try:
+            bot_username = (await context.bot.get_me()).username
+            context.bot_data["bot_username"] = bot_username
+        except Exception as e:
+            log.debug("Could not resolve bot username for video sharing: %s", e)
+
     markup = video_actions(
         video_id,
         show_rename=show_rename,
@@ -488,6 +546,7 @@ async def _enrich_and_send(
         performers=cast[:4],
         user_id=update.effective_user.id if update.effective_user else None,
         is_admin=_is_admin(update),
+        bot_username=bot_username,
     )
 
     # Multi-part navigation — if this video has siblings, add prev/next buttons
@@ -503,6 +562,8 @@ async def _enrich_and_send(
         context.bot, chat_id, row["file_id"], caption_text, markup
     )
     log.info("_enrich_and_send: _send_video_ref returned successfully")
+    if update.effective_user:
+        mark_welcome_conversion(update.effective_user.id)
     
     await _maybe_send_ad(update, context)
     
@@ -551,13 +612,16 @@ async def _replace_with_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    start_payload = context.args[0] if context.args else None
+    start_video_id, start_referrer_id = _parse_start_payload(start_payload)
     if user:
         is_new = not user_exists(user.id)
         ensure_user_exists(user.id)
         if is_new:
-            if context.args and context.args[0].startswith("ref_"):
+            get_or_assign_welcome_variant(user.id)
+            if start_referrer_id is not None:
                 try:
-                    referrer_id = int(context.args[0].replace("ref_", ""))
+                    referrer_id = start_referrer_id
                     bonus = max(1, int(get_bot_setting("referral_bonus", "10") or "10"))
                     if record_referral(referrer_id, user.id, bonus):
                         refs = get_referral_count(referrer_id)
@@ -593,11 +657,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name_str = " ".join(full_name) or "Unknown"
             await _log_event(context, f"👤 *New User*\nID: `{user.id}`\nUsername: {username}\nName: {name_str}")
             
-    if context.args and context.args[0].startswith("vid_"):
+    if start_video_id is not None:
         if await _check_force_join(update, context):
             return
         try:
-            vid_id = int(context.args[0].replace("vid_", ""))
+            vid_id = start_video_id
             # Quota Check logic
             if not _is_admin(update) and not is_user_premium(user.id):
                 from nodick.db import increment_quota, get_user_quota
@@ -626,6 +690,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await _check_force_join(update, context):
         return
     markup = main_menu(user.id if user else None)
+    welcome_text = _welcome_message(user.id if user else None)
     
     welcome_gif = get_bot_setting("welcome_gif", "")
     
@@ -644,11 +709,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
                 return await context.bot.send_animation(
-                    chat_id=cmsg.chat_id, animation=welcome_gif, caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+                    chat_id=cmsg.chat_id, animation=welcome_gif, caption=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
                 )
             else:
                 try:
-                    await update.callback_query.edit_message_caption(caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+                    await update.callback_query.edit_message_caption(caption=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
                 except Exception:
                     pass
         else:
@@ -659,22 +724,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
                 return await context.bot.send_message(
-                    chat_id=cmsg.chat_id, text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+                    chat_id=cmsg.chat_id, text=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
                 )
             else:
                 try:
-                    await update.callback_query.edit_message_text(text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+                    await update.callback_query.edit_message_text(text=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
                 except Exception:
                     pass
     else:
         if welcome_gif:
             try:
-                await update.message.reply_animation(animation=welcome_gif, caption=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+                await update.message.reply_animation(animation=welcome_gif, caption=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
             except Exception:
-                await update.message.reply_text(text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+                await update.message.reply_text(text=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
         else:
             await update.message.reply_text(
-                text=WELCOME_MSG, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+                text=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
             )
 
 
@@ -830,12 +895,20 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         views = total_views()
         cats = category_count()
         users = get_user_count()
+        experiment = get_welcome_experiment_stats()
+        a = experiment["A"]
+        b = experiment["B"]
+        a_rate = (a["converted"] / a["exposed"] * 100) if a["exposed"] else 0.0
+        b_rate = (b["converted"] / b["exposed"] * 100) if b["exposed"] else 0.0
         text = (
             f"📊 *NoDick Stats*\n\n"
             f"👥 Users: {users:,}\n"
             f"📹 Videos: {total:,}\n"
             f"👁 Views: {views:,}\n"
-            f"📁 Categories: {cats:,}"
+            f"📁 Categories: {cats:,}\n\n"
+            f"🧪 *Welcome A/B — first watch*\n"
+            f"A: {a['converted']}/{a['exposed']} ({a_rate:.1f}%)\n"
+            f"B: {b['converted']}/{b['exposed']} ({b_rate:.1f}%)"
         )
         if update.callback_query:
             log.info("Stats: editing message %s for user %s",
@@ -2455,6 +2528,7 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     ref_count = get_referral_count(user_id)
     bonus_total = get_referral_bonus_total(user_id)
+    social = get_referral_social_proof(user_id)
     bot_username = (await context.bot.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
     try:
@@ -2472,8 +2546,27 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "I found an adult content bot with instant streaming, no ads, and premium videos. "
         f"Join through my link and we both get perks: {ref_link}"
     )
+    activity_lines = []
+    if social["yours_today"]:
+        activity_lines.append(
+            f"🔥 *{social['yours_today']} of your invites joined today.*"
+        )
+    elif social["global_today"]:
+        activity_lines.append(
+            f"🔥 *{social['global_today']} people joined through invites today.*"
+        )
+    if social["leader_total"] > ref_count:
+        gap = social["leader_total"] - ref_count
+        activity_lines.append(
+            f"🏆 The leaderboard has *{social['leader_total']} referrals* at the top — you're *{gap} away*."
+        )
+    social_proof = "\n".join(activity_lines)
+    if social_proof:
+        social_proof += "\n\n"
+
     text = (
         "🎁 *Invite & Earn*\n\n"
+        f"{social_proof}"
         f"Invite friends to this adult content bot. Each *new* user who starts through "
         f"your link gives you *+{bonus} bonus watches* instantly.\n\n"
         f"👑 *Premium milestone*\n"

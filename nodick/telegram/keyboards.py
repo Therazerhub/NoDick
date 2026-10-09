@@ -93,6 +93,7 @@ def video_actions(
     performers: list[str] | None = None,
     user_id: int | None = None,
     is_admin: bool = False,
+    bot_username: str | None = None,
 ) -> InlineKeyboardMarkup:
     
     more_text = "🔥 More"
@@ -107,6 +108,15 @@ def video_actions(
             InlineKeyboardButton("💦 Save", callback_data=f"fav_{video_id}"),
         ]
     ]
+    if bot_username and user_id is not None:
+        deep_link = f"https://t.me/{bot_username}?start=sv_{video_id}_{user_id}"
+        share_url = (
+            "https://t.me/share/url?url="
+            f"{quote(deep_link, safe='')}&text="
+            f"{quote('Watch this with me — instant streaming, no ads.', safe='')}"
+        )
+        rows.append([InlineKeyboardButton("📤 Share This Video", url=share_url)])
+
     # Smart row: recommendations + cast — only when we have cached metadata
     smart_row = []
     if show_similar:
