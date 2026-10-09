@@ -337,11 +337,68 @@ async def _maybe_send_ad(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ── Auto Delete ──────────────────────────────────────────────────────────
 
 async def _auto_delete_message(context: ContextTypes.DEFAULT_TYPE):
-    data = context.job.data
+    data = context.job.data if context.job else None
+    if not isinstance(data, dict):
+        log.warning("Could not auto-delete video: scheduled job data is missing")
+        return
     try:
         await context.bot.delete_message(chat_id=data["chat_id"], message_id=data["message_id"])
-    except Exception:
-        pass
+        log.info("Auto-deleted video message %s from chat %s", data["message_id"], data["chat_id"])
+    except Exception as e:
+        log.warning(
+            "Could not auto-delete video message %s from chat %s: %s",
+            data.get("message_id"), data.get("chat_id"), e,
+        )
+
+
+def _auto_delete_minutes() -> int | None:
+    """Return the configured delay, or None when auto-delete is disabled."""
+    if get_bot_setting("auto_delete_enabled", "1") != "1":
+        return None
+    try:
+        return max(1, int(get_bot_setting("auto_delete_minutes", "30") or "30"))
+    except (TypeError, ValueError):
+        log.warning("Invalid auto_delete_minutes setting; falling back to 30")
+        return 30
+
+
+def _append_auto_delete_notice(caption: str, minutes: int) -> str:
+    unit = "minute" if minutes == 1 else "minutes"
+    return (
+        f"{caption}\n\n"
+        f"⚠️ *Save it before it disappears.* This video auto-deletes in *{minutes} {unit}*."
+    )
+
+
+def _message_id_from_send_result(sent_msg) -> int | None:
+    """Normalize PTB Message, MessageId, nested wrappers, and raw integers."""
+    value = sent_msg
+    for _ in range(3):
+        if isinstance(value, int):
+            return value
+        value = getattr(value, "message_id", None)
+        if value is None:
+            return None
+    return value if isinstance(value, int) else None
+
+
+def _schedule_auto_delete(context, chat_id: int, sent_msg, minutes: int) -> bool:
+    msg_id = _message_id_from_send_result(sent_msg)
+    if msg_id is None:
+        log.warning("Auto-delete not scheduled: Telegram send returned no message ID")
+        return False
+    if not context.job_queue:
+        log.error("Auto-delete not scheduled: PTB JobQueue is unavailable")
+        return False
+    context.job_queue.run_once(
+        _auto_delete_message,
+        when=minutes * 60,
+        data={"chat_id": chat_id, "message_id": msg_id},
+        name=f"autodel_{chat_id}_{msg_id}",
+    )
+    log.info("Scheduled auto-delete for message %s in %s minute(s)", msg_id, minutes)
+    return True
+
 
 async def _send_video_ref(
     bot, chat_id: int, file_ref: str, caption: str, reply_markup=None
@@ -527,6 +584,11 @@ async def _enrich_and_send(
             f"⏱ {format_duration(row['duration'])} | 👁 {row['view_count'] + 1}"
         )
 
+    is_admin = _is_admin(update)
+    delete_mins = None if is_admin else _auto_delete_minutes()
+    if delete_mins is not None:
+        caption_text = _append_auto_delete_notice(caption_text or "", delete_mins)
+
     show_rename = bool(
         meta and meta.get("stashdb_confidence", 0) and meta["stashdb_confidence"] >= 0.9
     )
@@ -545,7 +607,7 @@ async def _enrich_and_send(
         show_similar=bool(row_tags or cast),
         performers=cast[:4],
         user_id=update.effective_user.id if update.effective_user else None,
-        is_admin=_is_admin(update),
+        is_admin=is_admin,
         bot_username=bot_username,
     )
 
@@ -567,19 +629,8 @@ async def _enrich_and_send(
     
     await _maybe_send_ad(update, context)
     
-    if get_bot_setting("auto_delete_enabled", "1") == "1" and not _is_admin(update):
-        delete_mins = int(get_bot_setting("auto_delete_minutes", "30"))
-        if sent_msg:
-            msg_id = getattr(sent_msg, 'message_id', sent_msg)
-            if hasattr(msg_id, "message_id"):
-                msg_id = msg_id.message_id
-            if isinstance(msg_id, int):
-                context.job_queue.run_once(
-                    _auto_delete_message,
-                    when=delete_mins * 60,
-                    data={"chat_id": chat_id, "message_id": msg_id},
-                    name=f"autodel_{chat_id}_{msg_id}",
-                )
+    if delete_mins is not None:
+        _schedule_auto_delete(context, chat_id, sent_msg, delete_mins)
 
     # Lazy size backfill — fire-and-forget when we don't know the size yet
     if not row.get("file_size"):
