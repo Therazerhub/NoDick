@@ -12,7 +12,7 @@ from nodick.db import _fetchone, get_bot_setting, get_video
 from nodick.metadata.stash import query_api
 
 try:
-    from PIL import Image, ImageFilter
+    import PIL  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -35,11 +35,14 @@ def fetch_scene_image(scene_id: str) -> Optional[bytes]:
     }
     """
     try:
-        data = query_api(
+        payload = query_api(
             settings.stashdb_graphql_url, settings.stashdb_api_key,
             query, {"id": scene_id}
         )
-        scene = (data or {}).get("findScene") or {}
+        # query_api returns the full GraphQL envelope ({"data": {...}}).
+        # Reading findScene from the top level silently discarded every valid
+        # response and forced the poster into its fallback path.
+        scene = ((payload or {}).get("data") or {}).get("findScene") or {}
         images = scene.get("images") or []
         if not images:
             log.warning("poster: scene %s has no StashDB images", scene_id)
@@ -68,46 +71,44 @@ def fetch_scene_image(scene_id: str) -> Optional[bytes]:
 
 
 def create_blurred_thumbnail(image_bytes: bytes) -> bytes:
-    """Heavy Gaussian blur + darken for SFW channel safety.
+    """Create a consistent, dark SFW teaser without flattening small thumbs.
 
-    Blur radius scales with image size: GaussianBlur(50) is sensible on a
-    1200px+ StashDB image, but on a small (200-400px) Telegram thumbnail it
-    pushes everything to a uniform gray wall. We scale down so the result
-    keeps enough structure to look like an intentional teaser, not a bug.
+    Every source is first cover-fitted to one canvas. That matters: applying a
+    25px blur directly to a 200px Telegram thumbnail destroys all contrast and
+    produces the gray rectangle users were seeing. Upscaling first keeps the
+    blur visually intentional while still hiding explicit detail.
     """
     if not HAS_PIL:
         return image_bytes
     try:
-        from PIL import Image, ImageFilter
-        with Image.open(io.BytesIO(image_bytes)) as img:
-            img = img.convert("RGB")
-            w, h = img.size
-            long_edge = max(w, h)
-            # target radius ~ 12px per 100px of the long edge, capped at 30
-            radius = min(30, max(8, int(long_edge / 100.0 * 12)))
-            blurred = img.filter(ImageFilter.GaussianBlur(radius))
-            darkened = Image.eval(blurred, lambda x: int(x * 0.7))
-            out = io.BytesIO()
-            darkened.save(out, format="JPEG", quality=85)
-            log.info("poster: blurred %sx%s at radius %s → %s bytes",
-                     w, h, radius, len(out.getvalue()))
-            return out.getvalue()
+        from PIL import Image, ImageEnhance, ImageFilter, ImageOps, ImageStat
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            source = ImageOps.exif_transpose(source).convert("RGB")
+            original_size = source.size
+            canvas = ImageOps.fit(
+                source,
+                (960, 540),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.5),
+            )
+
+        blurred = canvas.filter(ImageFilter.GaussianBlur(22))
+        darkened = ImageEnhance.Brightness(blurred).enhance(0.68)
+        # A restrained violet grade keeps the teaser deliberate rather than
+        # looking like Telegram failed to load a monochrome placeholder.
+        graded = Image.blend(darkened, Image.new("RGB", darkened.size, (15, 6, 24)), 0.10)
+
+        out = io.BytesIO()
+        graded.save(out, format="JPEG", quality=86, optimize=True)
+        result = out.getvalue()
+        contrast = sum(ImageStat.Stat(graded).stddev) / 3
+        log.info(
+            "poster: blurred source %sx%s → 960x540 radius=22 contrast=%.1f (%s bytes)",
+            original_size[0], original_size[1], contrast, len(result),
+        )
+        return result
     except Exception as e:
         log.error("Failed to blur image: %s", e)
-        return image_bytes
-
-
-def create_fallback_image() -> bytes:
-    """Plain dark placeholder when no image can be generated."""
-    if not HAS_PIL:
-        return b""
-    try:
-        from PIL import Image
-        img = Image.new("RGB", (800, 450), color=(20, 20, 24))
-        out = io.BytesIO()
-        img.save(out, format="JPEG")
-        return out.getvalue()
-    except Exception:
         return b""
 
 
@@ -124,6 +125,10 @@ async def fetch_telegram_thumb(video: dict) -> Optional[bytes]:
     chat_id = video.get("source_chat_id")
     msg_id = video.get("source_message_id")
     if not chat_id or not msg_id:
+        log.warning(
+            "poster: video %s has no source_chat_id/source_message_id for Telegram thumbnail",
+            video.get("id"),
+        )
         return None
     try:
         from nodick.services.message_importer import _get_telethon_client
@@ -131,20 +136,20 @@ async def fetch_telegram_thumb(video: dict) -> Optional[bytes]:
         msgs = await client.get_messages(chat_id, ids=int(msg_id))
         msg = msgs[0] if msgs else None
         if not msg or not getattr(msg, "media", None):
+            log.warning("poster: source message %s has no media", msg_id)
             return None
-        # Prefer the document/video thumbnail
-        media = getattr(msg, "document", None) or getattr(msg, "video", None) or None
-        thumb = None
-        if media is not None and getattr(media, "thumbs", None):
-            thumb = media.thumbs[0]  # often a thumbnail photo/size
-        if thumb is None:
-            return None
-        import io as _io
-        from telethon.tl.types import PhotoSize  # noqa: F401
-        out = _io.BytesIO()
-        await client.download_media(thumb, file=out)
+
+        # Ask Telethon to resolve and download the largest available preview
+        # from the original message. Passing media.thumbs[0] directly often
+        # selects a tiny stripped thumbnail (or fails to download at all).
+        out = io.BytesIO()
+        await client.download_media(msg, file=out, thumb=-1)
         data = out.getvalue()
-        return data if data else None
+        if data:
+            log.info("poster: Telegram thumbnail OK (%s bytes) for video %s", len(data), video.get("id"))
+            return data
+        log.warning("poster: Telegram source message %s returned an empty thumbnail", msg_id)
+        return None
     except Exception as e:
         log.info("Telegram thumb unavailable for video %s: %s", video.get("id"), e)
         return None
@@ -238,6 +243,19 @@ def _select_video() -> Optional[dict]:
     return _select_one()
 
 
+async def _fetch_teaser_source(video: dict) -> tuple[Optional[bytes], str]:
+    """Return the first real image source and its diagnostic label."""
+    scene_id = video.get("stashdb_scene_id")
+    if scene_id:
+        image = fetch_scene_image(scene_id)
+        if image:
+            return image, "stashdb"
+    image = await fetch_telegram_thumb(video)
+    if image:
+        return image, "telegram"
+    return None, "none"
+
+
 # ── Main poster ──────────────────────────────────────────────────────────────
 
 async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = False) -> int:
@@ -258,26 +276,42 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
         log.warning("No autopost channels configured")
         return 0
 
-    video = _select_video()
-    if not video:
-        log.warning("No videos available for autopost")
+    # Never publish a placeholder: try several candidates until one has a real
+    # StashDB image or Telegram thumbnail. A skipped post is better than the
+    # feature advertising itself with a gray rectangle.
+    video = None
+    blurred = b""
+    source = "none"
+    tried_ids: set[int] = set()
+    for _ in range(6):
+        candidate = _select_video()
+        if not candidate:
+            break
+        candidate_id = int(candidate["id"])
+        if candidate_id in tried_ids:
+            continue
+        tried_ids.add(candidate_id)
+
+        img_data, source = await _fetch_teaser_source(candidate)
+        if not img_data:
+            log.warning("poster: video %s has no usable image source; trying another", candidate_id)
+            continue
+        blurred = create_blurred_thumbnail(img_data)
+        if not blurred:
+            log.warning("poster: video %s image could not be rendered; trying another", candidate_id)
+            continue
+        video = candidate
+        break
+
+    if not video or not blurred:
+        log.error("Auto-post aborted: no real thumbnail found after %s candidate(s)", len(tried_ids))
         return 0
 
     vid_id = video["id"]
-    scene_id = video.get("stashdb_scene_id")
     title = video.get("stashdb_title") or video.get("title") or "Exclusive Video"
     performer = video.get("stashdb_performer") or "Unknown"
     category = video.get("category") or "Vault"
-
-    # Build image, best chain first: StashDB scene art → the video's own
-    # Telegram thumbnail → plain placeholder. All blurred for SFW safety.
-    img_data = fetch_scene_image(scene_id) if scene_id else None
-    if not img_data:
-        img_data = await fetch_telegram_thumb(video)
-    blurred = create_blurred_thumbnail(img_data) if img_data else create_fallback_image()
-    if not blurred:
-        log.error("Could not generate any image for autopost")
-        return 0
+    log.info("poster: using %s thumbnail for video %s", source, vid_id)
 
     caption = (
         f"🎬 **{title}**\n\n"
