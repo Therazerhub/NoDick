@@ -149,6 +149,72 @@ print(json.dumps({"pending": "pending_referrer_id" in columns, "category_index":
     assert result == {"pending": True, "category_index": True}
 
 
+def test_fresh_sqlite_growth_schema_and_events(tmp_path):
+    result = _run_db_script(
+        tmp_path,
+        """
+import json
+from nodick import db
+db.init_db()
+db.ensure_user_exists(501)
+assert db.record_growth_event('start', 501, source='referral', payload='ref_1')
+assert db.record_growth_event('gate_shown', 501, source='force_join')
+assert db.record_growth_event('verify_failure', 501, source='force_join')
+assert db.record_growth_event('verify_success', 501, source='force_join')
+first = db.record_growth_event('first_delivery', 501, source='bot', video_id=1, first_only=True)
+duplicate = db.record_growth_event('first_delivery', 501, source='bot', video_id=2, first_only=True)
+metrics = db.get_growth_metrics()
+with db.connect() as conn:
+    columns = [row[1] for row in conn.execute('PRAGMA table_info(growth_events)')]
+print(json.dumps({'columns': columns, 'first': first, 'duplicate': duplicate, 'metrics': metrics}))
+""",
+    )
+    assert result["columns"] == ["id", "user_id", "event_type", "source", "payload", "video_id", "created_at"]
+    assert result["first"] is True and result["duplicate"] is False
+    assert result["metrics"]["funnel"]["start"]["users"] == 1
+    assert result["metrics"]["funnel"]["verify_success"]["events"] == 1
+    assert result["metrics"]["dau"] == 1
+
+
+def test_growth_metrics_use_one_acquisition_and_real_engagement(tmp_path):
+    """Repeat starts must not inflate acquisition; gates must not count as retention."""
+    result = _run_db_script(
+        tmp_path,
+        """
+import json
+from datetime import datetime, timedelta
+from nodick import db
+
+db.init_db()
+db.ensure_user_exists(1)
+# Acquired 8 days ago via referral; returning today without engaging.
+start_day = (datetime.utcnow() - timedelta(days=8)).strftime('%Y-%m-%d %H:%M:%S')
+db._execute(
+    "INSERT INTO growth_events (user_id, event_type, source, created_at) VALUES (?, 'start', 'referral', ?)",
+    (1, start_day),
+)
+db.record_growth_event('session', 1, source='returning')
+# A gate impression alone is NOT engagement.
+db.record_growth_event('gate_shown', 1, source='force_join')
+# Engagement 8 days ago (cohort day) only — not day 1, not day 7.
+db._execute(
+    "INSERT INTO growth_events (user_id, event_type, source, created_at) VALUES (?, 'delivery', 'bot', ?)",
+    (1, start_day),
+)
+metrics = db.get_growth_metrics(days=30)
+print(json.dumps(metrics))
+""",
+    )
+    sources = {row["source"]: row["starts"] for row in result["sources"]}
+    assert sources == {"referral": 1}, "repeat starts must not create duplicate acquisitions"
+    # The user's only engagement was 8 days ago, so today's DAU must be 0.
+    assert result["dau"] == 0
+    # The user is D7-eligible and their delivery is not on day 1 or day 7.
+    assert result["retention"]["d1_eligible"] >= 1
+    assert result["retention"]["d1"] == 0
+    assert result["retention"]["d7"] == 0
+
+
 def test_random_video_is_unbiased_across_sparse_ids_and_keeps_size_filter(tmp_path):
     result = _run_db_script(
         tmp_path,

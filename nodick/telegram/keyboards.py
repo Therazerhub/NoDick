@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from nodick.config import settings
 from nodick.db import get_bot_setting, get_user_size_limit, is_user_premium, get_user_quota
@@ -15,7 +15,14 @@ def _action_buttons_enabled() -> bool:
 
 
 def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
-    rows = [
+    rows = []
+    if settings.mini_app_url:
+        rows.append([
+            InlineKeyboardButton(
+                "◼ Open Library", web_app=WebAppInfo(url=settings.mini_app_url)
+            )
+        ])
+    rows += [
         [
             InlineKeyboardButton("🎲 Surprise Me", callback_data="random"),
             InlineKeyboardButton("🔍 Search", callback_data="search_menu"),
@@ -46,7 +53,8 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
 
     if user_id == settings.admin_id or is_extra:
         # Add stats next to favorites for admin
-        rows[2].append(InlineKeyboardButton("📊 Bot Stats", callback_data="stats"))
+        growth_row = 3 if settings.mini_app_url else 2
+        rows[growth_row].append(InlineKeyboardButton("📊 Bot Stats", callback_data="stats"))
         rows.append(
             [
                 InlineKeyboardButton("🛰 Import", callback_data="import_menu"),
@@ -203,8 +211,9 @@ def settings_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("🔒 Force Join", callback_data="prompt_forcejoin"),
-            InlineKeyboardButton("🚀 Auto-Post Now", callback_data="prompt_autopostnow")
+            InlineKeyboardButton("🩺 Join Health", callback_data="forcejoin_health")
         ],
+        [InlineKeyboardButton("🚀 Auto-Post Now", callback_data="prompt_autopostnow")],
         [
             InlineKeyboardButton("⚙️ Auto-Post Task", callback_data="toggle_autopost"),
             InlineKeyboardButton("⏰ Post Cooldown", callback_data="prompt_autopost_cooldown")

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark"><meta name="theme-color" content="#050505">
+  <title>NoDick</title><link rel="stylesheet" href="/app/assets/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div class="noise"></div>
+  <main>
+    <header><div><p class="eyebrow">PRIVATE LIBRARY</p><h1>NoDick<span>.</span></h1></div><div id="avatar" class="avatar">N</div></header>
+    <section id="status" class="state"><span class="loader"></span><p>Opening your library…</p></section>
+    <div id="app" hidden>
+      <section class="hero"><p>YOUR ACCESS</p><div class="quota"><strong id="remaining">—</strong><span>watches left</span></div><div class="meter"><i id="quota-meter"></i></div></section>
+      <section class="stats">
+        <article><small>STREAK</small><strong id="streak">—</strong><span>days</span></article>
+        <article><small>INVITES</small><strong id="referrals">—</strong><span id="ref-progress">activated</span></article>
+        <article><small>BEST</small><strong id="best">—</strong><span>days</span></article>
+      </section>
+      <nav><button class="active" data-view="discover">Discover</button><button data-view="saved">Saved</button></nav>
+      <section id="discover">
+        <label class="search"><span>⌕</span><input id="search" type="search" maxlength="100" placeholder="Search the library" autocomplete="off"></label>
+        <div id="categories" class="chips"></div>
+        <div class="section-head"><h2>Library</h2><span id="result-count"></span></div>
+        <div id="catalog" class="list"></div>
+      </section>
+      <section id="saved" hidden><div class="section-head"><h2>Saved</h2></div><div id="saved-list" class="list"></div></section>
+    </div>
+  </main>
+  <template id="item-template"><article class="item"><div><span class="category"></span><h3></h3><small class="duration"></small></div><div class="actions"><button class="save" aria-label="Save">♡</button><a class="open">OPEN</a></div></article></template>
+  <script src="/app/assets/app.js" defer></script>
+</body>
+</html>

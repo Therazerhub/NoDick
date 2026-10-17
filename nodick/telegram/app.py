@@ -79,6 +79,8 @@ from nodick.db import (
     get_all_user_ids,
     user_exists,
     get_user_count,
+    record_growth_event,
+    get_growth_metrics,
 )
 from nodick.services.importer import TelegramImporter
 from nodick.services.message_importer import (
@@ -103,6 +105,7 @@ from nodick.utils import (
     clean_title_for_display,
     extract_category_from_title,
     format_duration,
+    is_placeholder_title,
     title_from_filename_or_caption,
 )
 
@@ -203,6 +206,18 @@ def _parse_start_payload(payload: str | None) -> tuple[int | None, int | None]:
     return None, None
 
 
+def _acquisition_source(payload: str | None) -> str:
+    if not payload:
+        return "organic"
+    if payload.startswith("ref_"):
+        return "referral"
+    if payload.startswith("sv_"):
+        return "shared_video"
+    if payload.startswith("vid_"):
+        return "video_link"
+    return "other_deep_link"
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
@@ -224,12 +239,50 @@ def _is_admin(update: Update) -> bool:
 
 # ── Force Join check ──────────────────────────────────────────────────────
 
-def _get_force_join_channels() -> list[dict]:
-    raw = get_bot_setting("force_join_channels", "[]")
+def _force_join_config(raw: str | None = None) -> dict:
+    """Parse and validate force-join configuration without silently disabling it."""
+    if raw is None:
+        raw = get_bot_setting("force_join_channels", "[]")
+    if raw in (None, "", "[]"):
+        return {"enabled": False, "valid": True, "channels": [], "error": None}
     try:
-        return json.loads(raw) or []
+        value = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        return []
+        return {"enabled": True, "valid": False, "channels": [], "error": "invalid JSON"}
+    if not isinstance(value, list):
+        return {"enabled": True, "valid": False, "channels": [], "error": "expected a list"}
+    if not value:
+        return {"enabled": False, "valid": True, "channels": [], "error": None}
+    channels = []
+    for index, channel in enumerate(value):
+        if not isinstance(channel, dict):
+            return {"enabled": True, "valid": False, "channels": [], "error": f"entry {index + 1} is not an object"}
+        try:
+            channel_id = int(channel["id"])
+            name = str(channel["name"]).strip()
+            url = str(channel["url"]).strip()
+        except (KeyError, TypeError, ValueError):
+            return {"enabled": True, "valid": False, "channels": [], "error": f"entry {index + 1} has invalid fields"}
+        if not name or len(name) > 80 or not url.startswith("https://"):
+            return {"enabled": True, "valid": False, "channels": [], "error": f"entry {index + 1} has unsafe display fields"}
+        channels.append({"id": channel_id, "name": name, "url": url})
+    return {"enabled": True, "valid": True, "channels": channels, "error": None}
+
+
+def _get_force_join_channels() -> list[dict]:
+    """Compatibility accessor; invalid enabled configuration returns no channels."""
+    return _force_join_config()["channels"]
+
+
+def _member_has_access(member) -> bool:
+    """Classify Telegram membership conservatively, including restricted users."""
+    status = str(getattr(member, "status", "")).lower()
+    if status in {"member", "administrator", "creator", "owner"}:
+        return True
+    if status == "restricted":
+        return getattr(member, "is_member", False) is True
+    return False
+
 
 async def _check_force_join(
     update: Update,
@@ -238,22 +291,39 @@ async def _check_force_join(
 ) -> bool:
     if _is_admin(update):
         return False
-    channels = _get_force_join_channels()
-    if not channels:
+    config = _force_join_config()
+    if not config["enabled"]:
         return False
     user_id = update.effective_user.id if update.effective_user else None
     if not user_id:
-        return False
+        return True
+    if not config["valid"]:
+        log.error("Force-join configuration invalid: %s", config["error"])
+        record_growth_event("gate_shown", user_id, source="force_join_misconfigured")
+        text = (
+            "🔒 *Access is temporarily unavailable.*\n\n"
+            "The join check is misconfigured. An admin has been notified. Please try again later."
+        )
+        if update.callback_query:
+            await update.callback_query.answer("Access check unavailable", show_alert=True)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text=text, parse_mode=ParseMode.MARKDOWN
+            )
+        elif update.message:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        return True
+    channels = config["channels"]
     not_joined = []
     for ch in channels:
         try:
             member = await context.bot.get_chat_member(ch["id"], user_id)
-            if member.status in ("left", "kicked"):
+            if not _member_has_access(member):
                 not_joined.append(ch)
         except Exception:
             not_joined.append(ch)
     if not not_joined:
         return False
+    record_growth_event("gate_shown", user_id, source="force_join")
     if pending_action:
         context.user_data["pending_after_join"] = pending_action
     else:
@@ -280,19 +350,26 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if not user_id:
         await q.answer("❌ Can't verify", show_alert=True)
         return
-    channels = _get_force_join_channels()
+    config = _force_join_config()
+    if not config["enabled"] or not config["valid"]:
+        record_growth_event("verify_failure", user_id, source="force_join_config")
+        await q.answer("❌ Access check unavailable", show_alert=True)
+        return
+    channels = config["channels"]
     not_joined = []
     for ch in channels:
         try:
             member = await context.bot.get_chat_member(ch["id"], user_id)
-            if member.status in ("left", "kicked"):
+            if not _member_has_access(member):
                 not_joined.append(ch)
         except Exception:
             not_joined.append(ch)
     if not_joined:
+        record_growth_event("verify_failure", user_id, source="force_join")
         names = ", ".join(ch["name"] for ch in not_joined)
         await q.answer(f"❌ Still not joined: {names}", show_alert=True)
         return
+    record_growth_event("verify_success", user_id, source="force_join")
     await q.answer("✅ Verified! Welcome in… 😏")
     pending_action = context.user_data.pop("pending_after_join", None)
     if pending_action:
@@ -530,6 +607,31 @@ def _caption_from_cache(
     return f"{head}\n{body}"
 
 
+def _local_video_caption(row, meta=None) -> str:
+    """Render a truthful local fallback without placeholder titles or fake duration."""
+    data = dict(row)
+    metadata = dict(meta) if meta else {}
+    raw_title = data.get("title") or ""
+    if raw_title and not is_placeholder_title(raw_title):
+        title = clean_title_for_display(raw_title)
+    else:
+        performer = (
+            metadata.get("corrected_performer") or metadata.get("stashdb_performer") or ""
+        ).strip(", ")
+        category = (data.get("category") or "").strip()
+        source = (data.get("source_channel") or "").strip()
+        if performer and category:
+            title = f"{performer} — {category}"
+        else:
+            title = performer or category or source or "Library selection"
+    details = []
+    duration = int(data.get("duration") or 0)
+    if duration > 0:
+        details.append(f"⏱ {format_duration(duration)}")
+    details.append(f"👁 {int(data.get('view_count') or 0) + 1}")
+    return f"📁 *{title}*\n\n{' | '.join(details)}"
+
+
 async def _notify_referral_activation(context, user_id: int) -> None:
     """Credit and notify a referral only after the first delivered video."""
     try:
@@ -542,6 +644,9 @@ async def _notify_referral_activation(context, user_id: int) -> None:
         return
     referrer_id = result["referrer_id"]
     refs = result["count"]
+    record_growth_event(
+        "referral_activation", user_id, source="referral", payload=str(referrer_id)
+    )
     if result["premium_awarded"]:
         text = (
             f"🎉 *Premium unlocked!*\n\n"
@@ -646,11 +751,7 @@ async def _enrich_and_send(
             log.debug("Stash enrichment failed: %s", e)
 
     if not cache_used and (not caption_text or source == "local"):
-        base = clean_title_for_display(filename)
-        caption_text = (
-            f"📁 *{base}*\n\n"
-            f"⏱ {format_duration(row['duration'])} | 👁 {row['view_count'] + 1}"
-        )
+        caption_text = _local_video_caption(row, meta)
 
     is_admin = _is_admin(update)
     delete_mins = None if is_admin else _auto_delete_minutes()
@@ -704,6 +805,11 @@ async def _enrich_and_send(
         user_id = update.effective_user.id
         streak = None
         try:
+            first_delivery = record_growth_event(
+                "first_delivery", user_id, source="bot", video_id=video_id, first_only=True
+            )
+            if not first_delivery:
+                record_growth_event("delivery", user_id, source="bot", video_id=video_id)
             streak = bump_streak(user_id)
             mark_welcome_conversion(user_id)
         except Exception:
@@ -835,6 +941,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user:
         is_new = not user_exists(user.id)
         ensure_user_exists(user.id)
+        if is_new:
+            record_growth_event(
+                "start", user.id, source=_acquisition_source(start_payload),
+            )
+        else:
+            record_growth_event("session", user.id, source="returning")
         if is_new:
             get_or_assign_welcome_variant(user.id)
             if start_referrer_id is not None:
@@ -1047,16 +1159,34 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cats = category_count()
         users = get_user_count()
         experiment = get_welcome_experiment_stats()
+        growth = get_growth_metrics(30)
         a = experiment["A"]
         b = experiment["B"]
         a_rate = (a["converted"] / a["exposed"] * 100) if a["exposed"] else 0.0
         b_rate = (b["converted"] / b["exposed"] * 100) if b["exposed"] else 0.0
+        retention = growth["retention"]
+        d1_rate = retention["d1"] / retention["d1_eligible"] * 100 if retention["d1_eligible"] else 0
+        d7_rate = retention["d7"] / retention["d7_eligible"] * 100 if retention["d7_eligible"] else 0
+        funnel = growth["funnel"]
+        starts = funnel.get("start", {}).get("users", 0)
+        gates = funnel.get("gate_shown", {}).get("users", 0)
+        verified = funnel.get("verify_success", {}).get("users", 0)
+        failed = funnel.get("verify_failure", {}).get("events", 0)
+        first = funnel.get("first_delivery", {}).get("users", 0)
+        sources = ", ".join(f"{s['source']} {s['users']}" for s in growth["sources"][:3]) or "none"
         text = (
             f"📊 *NoDick Stats*\n\n"
             f"👥 Users: {users:,}\n"
             f"📹 Videos: {total:,}\n"
             f"👁 Views: {views:,}\n"
             f"📁 Categories: {cats:,}\n\n"
+            f"📈 *Growth — 30 days*\n"
+            f"Starts: {starts} · Gate: {gates} · Verified: {verified} ({failed} failed)\n"
+            f"First deliveries: {first}\n"
+            f"DAU / WAU: {growth['dau']} / {growth['wau']}\n"
+            f"D1: {retention['d1']}/{retention['d1_eligible']} ({d1_rate:.1f}%) · "
+            f"D7: {retention['d7']}/{retention['d7_eligible']} ({d7_rate:.1f}%)\n"
+            f"Sources: {sources}\n\n"
             f"🧪 *Welcome A/B — first watch*\n"
             f"A: {a['converted']}/{a['exposed']} ({a_rate:.1f}%)\n"
             f"B: {b['converted']}/{b['exposed']} ({b_rate:.1f}%)"
@@ -2105,22 +2235,51 @@ async def _handle_correction_text(
 
 # ── Feature Admin Commands ───────────────────────────────────────────────
 
+async def force_join_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show admins a redacted, live force-join configuration health report."""
+    if not _is_admin(update):
+        if update.callback_query:
+            await update.callback_query.answer("❌ Admin only.", show_alert=True)
+        return
+    config = _force_join_config()
+    lines = ["🩺 *Force Join Health*", ""]
+    if not config["enabled"]:
+        lines.append("⚪ Disabled — no channels configured.")
+    elif not config["valid"]:
+        lines.extend(("🔴 Enabled but invalid — access fails closed.", f"Reason: `{config['error']}`"))
+    else:
+        lines.extend(("🟡 Enabled and valid.", "\nBot access to each channel (getChatMember is reliable when the bot is an administrator):"))
+        me = await context.bot.get_me()
+        lines.append(f"Configured channels: *{len(config['channels'])}*")
+        for channel in config["channels"]:
+            try:
+                member = await context.bot.get_chat_member(channel["id"], me.id)
+                status = str(getattr(member, "status", "")).lower()
+                if status in {"administrator", "creator", "owner"}:
+                    marker, detail = "🟢", "bot is administrator"
+                elif status == "member":
+                    marker, detail = "🟡", "getChatMember needs bot admin rights to be reliable"
+                else:
+                    marker, detail = "🔴", "bot lacks membership"
+            except Exception:
+                marker, detail = "🔴", "unreachable or permission denied"
+            lines.append(f"{marker} *{channel['name']}* — {detail}")
+        lines.append("\nChannel identifiers are intentionally hidden here.")
+    text = "\n".join(lines)
+    if update.callback_query:
+        await update.callback_query.answer()
+        await _replace_with_text(update, context, text, settings_keyboard())
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
 async def forcejoin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command: manage forced join channels."""
     if not _is_admin(update):
         await update.message.reply_text("❌ Admin only.")
         return
-    if not context.args:
-        await update.message.reply_text(
-            "📢 *Force Join Channels*\n\n"
-            "Usage:\n"
-            "`/forcejoin add <channel_id> <name> <url>`\n"
-            "`/forcejoin remove <channel_id>`\n"
-            "`/forcejoin list`\n\n"
-            "Example:\n"
-            "`/forcejoin add -1001234567890 MyChannel https://t.me/mychannel`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+    if not context.args or context.args[0].lower() == "status":
+        await force_join_health(update, context)
         return
     sub = context.args[0].lower()
     channels = _get_force_join_channels()
@@ -2150,6 +2309,13 @@ async def forcejoin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ Channel `{ch_id}` already in list.", parse_mode=ParseMode.MARKDOWN)
             return
         channels.append({"id": ch_id, "name": ch_name, "url": ch_url})
+        validation = _force_join_config(json.dumps(channels))
+        if not validation["valid"]:
+            await update.message.reply_text(
+                f"❌ Rejected — the resulting config would fail closed: {validation['error']}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
         set_bot_setting("force_join_channels", json.dumps(channels))
         await update.message.reply_text(
             f"✅ Added force join channel: *{ch_name}* (`{ch_id}`)",
@@ -2905,6 +3071,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(import_status, pattern="^import_status$"))
     app.add_handler(CallbackQueryHandler(stats, pattern="^stats$"))
     app.add_handler(CallbackQueryHandler(settings_command, pattern="^settings$"))
+    app.add_handler(CallbackQueryHandler(force_join_health, pattern="^forcejoin_health$"))
     app.add_handler(CallbackQueryHandler(toggle_setting, pattern="^toggle_"))
     app.add_handler(CallbackQueryHandler(prompt_setting, pattern="^prompt_"))
     app.add_handler(CallbackQueryHandler(quality_menu, pattern="^quality$"))
@@ -2947,43 +3114,41 @@ def run() -> None:
 
     import sys as _sys
     import os as _os
-    import threading as _threading
-    from http.server import HTTPServer, BaseHTTPRequestHandler
+    from nodick.web import start_web_server
 
     if _sys.version_info >= (3, 10):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             asyncio.set_event_loop(asyncio.new_event_loop())
-
-    # Start a minimal health-check web server so Render knows we're alive
-    # and doesn't spin down the free tier service
-    class _HealthHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"NoDick is alive")
-            self.wfile.flush()
-
-        def log_message(self, format, *args):
-            pass  # suppress request logs
-
     _port = int(_os.getenv("PORT", "8080"))
-    _server = HTTPServer(("0.0.0.0", _port), _HealthHandler)
-    _t = _threading.Thread(target=_server.serve_forever, daemon=True)
-    _t.start()
-    log.info("Health server on port %d", _port)
+    server = None
+    try:
+        # Build the application (initializes the DB) BEFORE marking HTTP
+        # health ready, so Render traffic never hits an uninitialized app.
+        application = build_application()
+        # One threaded server keeps Render health checks unchanged and serves
+        # the authenticated Mini App/static API from this same process.
+        server = start_web_server(_port)
+        log.info("Health and Mini App server on port %d", _port)
 
-    print("🖤 NoDick starting...")
-    print(f"   Bot: @{settings.bot_token.split(':')[0]}")
-    print(f"   Admin: {settings.admin_id}")
-    print(f"   DB: {settings.db_path}")
-    print(f"   Database URL: {'✅ Set (PostgreSQL)' if settings.database_url else '❌ Not set (using SQLite)'}")
-    print(f"   StashDB: {'✅' if settings.stash_configured else '❌ no API key'}")
-    print(f"   FansDB: {'✅' if settings.fansdb_configured else '❌ no API key'}")
-    print(f"   Threshold: {get_match_threshold():.0%}")
-    print(f"   Health: http://0.0.0.0:{_port}/")
-    print("   Listening...")
+        print("🖤 NoDick starting...")
+        print(f"   Bot: @{settings.bot_token.split(':')[0]}")
+        print(f"   Admin: {settings.admin_id}")
+        print(f"   DB: {settings.db_path}")
+        print(f"   Database URL: {'✅ Set (PostgreSQL)' if settings.database_url else '❌ Not set (using SQLite)'}")
+        print(f"   StashDB: {'✅' if settings.stash_configured else '❌ no API key'}")
+        print(f"   FansDB: {'✅' if settings.fansdb_configured else '❌ no API key'}")
+        print(f"   Threshold: {get_match_threshold():.0%}")
+        print(f"   Health: http://0.0.0.0:{_port}/")
+        print("   Listening...")
 
-    build_application().run_polling()
+        application.run_polling()
+    finally:
+        if server is not None:
+            try:
+                server.shutdown()
+                server.server_close()
+                log.info("Health and Mini App server shut down")
+            except Exception:
+                log.exception("Web server shutdown failed")

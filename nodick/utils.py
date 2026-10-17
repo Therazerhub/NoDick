@@ -42,6 +42,19 @@ DOMAIN_CATEGORIES: dict[str, str] = {
     "tushyraw": "Tushy Raw",
 }
 
+_PLACEHOLDER_TITLE = re.compile(
+    r"^(?:(?:video|file|media|document|movie|clip)(?:\s*#?\s*\d+)?|\d+)$",
+    re.I,
+)
+
+
+def is_placeholder_title(title: Optional[str]) -> bool:
+    """Return true for generic importer labels that are not useful titles."""
+    if not title:
+        return True
+    cleaned = clean_title_for_display(title)
+    return cleaned == "Untitled" or bool(_PLACEHOLDER_TITLE.fullmatch(cleaned.strip()))
+
 
 def clean_title_for_display(title: str) -> str:
     """Clean a raw filename/title for safe display."""
@@ -65,12 +78,19 @@ def clean_title_for_display(title: str) -> str:
 def title_from_filename_or_caption(
     filename: Optional[str], caption: Optional[str], fallback: str
 ) -> str:
-    """Generate a display title from filename or caption."""
+    """Generate a useful title, rejecting importer placeholders."""
+    candidates = []
     if filename:
-        return clean_title_for_display(os.path.splitext(filename)[0])[:180]
+        candidates.append(os.path.splitext(filename)[0])
     if caption:
-        return clean_title_for_display(caption.split("\n", 1)[0])[:180]
-    return fallback
+        candidates.append(caption.split("\n", 1)[0])
+    candidates.append(fallback)
+    for candidate in candidates:
+        cleaned = clean_title_for_display(candidate)[:180]
+        if not is_placeholder_title(cleaned):
+            return cleaned
+    # Empty is preferable to presenting an invented placeholder as polished data.
+    return ""
 
 
 def extract_category_from_title(title: str) -> Optional[str]:

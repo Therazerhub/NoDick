@@ -204,6 +204,17 @@ def _init_pg():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS growth_events (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT,
+                event_type TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'unknown',
+                payload TEXT,
+                video_id INTEGER,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         # Default settings
         cur.execute(
             "INSERT INTO bot_settings (key, value) VALUES (%s, %s) ON CONFLICT DO NOTHING",
@@ -283,6 +294,9 @@ def _init_pg():
             "CREATE INDEX IF NOT EXISTS idx_favorites_user_id_id ON favorites(user_id, id DESC)",
             "CREATE INDEX IF NOT EXISTS idx_referrals_referrer_id ON referrals(referrer_id)",
             "CREATE INDEX IF NOT EXISTS idx_import_jobs_created_at ON import_jobs(created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_growth_events_type_created ON growth_events(event_type, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_growth_events_user_created ON growth_events(user_id, created_at DESC)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_growth_events_first_delivery ON growth_events(user_id) WHERE event_type = 'first_delivery'",
         ):
             cur.execute(sql)
 
@@ -379,6 +393,16 @@ def _init_sqlite():
         bonus_granted INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS growth_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        event_type TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'unknown',
+        payload TEXT,
+        video_id INTEGER,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
     """
     import sqlite3
 
@@ -458,6 +482,9 @@ def _init_sqlite():
             "CREATE INDEX IF NOT EXISTS idx_favorites_user_id_id ON favorites(user_id, id DESC)",
             "CREATE INDEX IF NOT EXISTS idx_referrals_referrer_id ON referrals(referrer_id)",
             "CREATE INDEX IF NOT EXISTS idx_import_jobs_created_at ON import_jobs(created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_growth_events_type_created ON growth_events(event_type, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_growth_events_user_created ON growth_events(user_id, created_at DESC)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_growth_events_first_delivery ON growth_events(user_id) WHERE event_type = 'first_delivery'",
         ):
             conn.execute(sql)
 
@@ -875,16 +902,68 @@ def toggle_favorite(user_id: int, video_id: int) -> bool:
         return False
 
 
+def set_favorite(user_id: int, video_id: int, saved: bool) -> bool:
+    """Idempotently set a saved item and return its resulting state."""
+    ensure_user_exists(user_id)
+    ph = "%s" if _using_pg else "?"
+    if saved:
+        if _using_pg:
+            _execute(
+                "INSERT INTO favorites (user_id, video_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (user_id, video_id),
+            )
+        else:
+            _execute(
+                "INSERT OR IGNORE INTO favorites (user_id, video_id) VALUES (?, ?)",
+                (user_id, video_id),
+            )
+        return True
+    _execute(
+        f"DELETE FROM favorites WHERE user_id = {ph} AND video_id = {ph}",
+        (user_id, video_id),
+    )
+    return False
+
+
+def get_catalog(
+    *, user_id: int, query: str = "", category: str = "", page: int = 0, per_page: int = 20
+) -> tuple[list[dict], int]:
+    """Return Mini App-safe text metadata; never returns Telegram file references."""
+    page = max(0, int(page))
+    per_page = max(1, min(50, int(per_page)))
+    ph = "%s" if _using_pg else "?"
+    like = "ILIKE" if _using_pg else "LIKE"
+    clauses: list[str] = []
+    params: list = []
+    if query:
+        clauses.append(f"(v.title {like} {ph} OR v.category {like} {ph})")
+        term = f"%{query[:100]}%"
+        params.extend((term, term))
+    if category:
+        clauses.append(f"v.category = {ph}")
+        params.append(category[:100])
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    count = _fetchone(f"SELECT COUNT(*) AS cnt FROM videos v{where}", tuple(params))
+    total = int(count["cnt"] if count else 0)
+    rows = _fetchall(
+        f"SELECT v.id, v.title, v.category, v.duration, "
+        f"CASE WHEN f.user_id IS NULL THEN 0 ELSE 1 END AS saved "
+        f"FROM videos v LEFT JOIN favorites f ON f.video_id=v.id AND f.user_id={ph}"
+        f"{where} ORDER BY v.id DESC LIMIT {ph} OFFSET {ph}",
+        tuple([user_id] + params + [per_page, page * per_page]),
+    )
+    return [dict(row) for row in rows], total
+
+
 def get_favorites(user_id: int, page: int = 0, per_page: int = 10, max_size_mb: Optional[int] = None) -> tuple[list, int]:
     size_chunk, size_params = _size_filter(max_size_mb, "v.file_size")
     if _using_pg:
-        total_row = _fetchone(
+        total = _fetchone(
             f"SELECT COUNT(*) AS cnt FROM favorites f JOIN videos v ON v.id = f.video_id WHERE f.user_id = %s{size_chunk}",
             (user_id,) + size_params,
-        )
-        total = total_row["cnt"]
+        )["cnt"]
         rows = _fetchall(
-            f"""SELECT v.id, v.title, v.duration FROM favorites f
+            f"""SELECT v.id, v.title, v.duration, v.category FROM favorites f
                JOIN videos v ON v.id = f.video_id
                WHERE f.user_id = %s{size_chunk}
                ORDER BY f.id DESC LIMIT %s OFFSET %s""",
@@ -892,11 +971,11 @@ def get_favorites(user_id: int, page: int = 0, per_page: int = 10, max_size_mb: 
         )
     else:
         total = _fetchone(
-            f"SELECT COUNT(*) FROM favorites f JOIN videos v ON v.id = f.video_id WHERE f.user_id = ?{size_chunk}",
+            f"SELECT COUNT(*) AS cnt FROM favorites f JOIN videos v ON v.id = f.video_id WHERE f.user_id = ?{size_chunk}",
             (user_id,) + size_params,
         )[0]
         rows = _fetchall(
-            f"""SELECT v.id, v.title, v.duration FROM favorites f
+            f"""SELECT v.id, v.title, v.duration, v.category FROM favorites f
                JOIN videos v ON v.id = f.video_id
                WHERE f.user_id = ?{size_chunk}
                ORDER BY f.id DESC LIMIT ? OFFSET ?""",
@@ -1579,6 +1658,168 @@ def user_exists(user_id: int) -> bool:
 def get_user_count() -> int:
     row = _fetchone("SELECT COUNT(*) as c FROM user_settings")
     return row['c'] if _using_pg and row else (row[0] if row else 0)
+
+def record_growth_event(
+    event_type: str,
+    user_id: int | None = None,
+    *,
+    source: str = "unknown",
+    payload: str | None = None,
+    video_id: int | None = None,
+    first_only: bool = False,
+) -> bool:
+    """Persist a bounded funnel event; analytics failures never affect delivery."""
+    allowed = {
+        "start", "session", "gate_shown", "verify_success", "verify_failure",
+        "first_delivery", "delivery", "referral_activation", "mini_app_open",
+    }
+    if event_type not in allowed:
+        raise ValueError(f"unsupported growth event: {event_type}")
+    clean_source = (source or "unknown")[:64]
+    clean_payload = payload[:500] if payload else None
+    ph = "%s" if _using_pg else "?"
+    try:
+        if first_only and user_id is not None:
+            if _using_pg:
+                cur = _execute(
+                    "INSERT INTO growth_events (user_id,event_type,source,payload,video_id) "
+                    "VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                    (user_id, event_type, clean_source, clean_payload, video_id),
+                )
+            else:
+                cur = _execute(
+                    "INSERT OR IGNORE INTO growth_events (user_id,event_type,source,payload,video_id) "
+                    "VALUES (?,?,?,?,?)",
+                    (user_id, event_type, clean_source, clean_payload, video_id),
+                )
+            return cur.rowcount == 1
+        _execute(
+            f"INSERT INTO growth_events (user_id,event_type,source,payload,video_id) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph})",
+            (user_id, event_type, clean_source, clean_payload, video_id),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def get_growth_metrics(days: int = 30) -> dict:
+    """Aggregate acquisition, funnel, activity and cohort retention metrics."""
+    days = max(1, min(365, int(days)))
+    interval = f"-{days - 1} days"
+    if _using_pg:
+        since = f"CURRENT_DATE - INTERVAL '{days - 1} days'"
+        date_expr = "created_at::date"
+        active_since = "CURRENT_TIMESTAMP - INTERVAL '6 days'"
+    else:
+        since = f"date('now', '{interval}')"
+        date_expr = "date(created_at)"
+        active_since = "datetime('now', '-6 days')"
+
+    funnel_rows = _fetchall(
+        f"SELECT event_type, COUNT(*) AS count, COUNT(DISTINCT user_id) AS users "
+        f"FROM growth_events WHERE created_at >= {since} GROUP BY event_type"
+    )
+    funnel = {
+        row["event_type"]: {"events": int(row["count"]), "users": int(row["users"])}
+        for row in funnel_rows
+    }
+    sources = _fetchall(
+        f"SELECT source, COUNT(*) AS starts, COUNT(DISTINCT user_id) AS users "
+        f"FROM growth_events WHERE event_type='start' AND created_at >= {since} "
+        f"GROUP BY source ORDER BY starts DESC"
+    )
+    engagement_types = "('first_delivery', 'delivery', 'mini_app_open')"
+    dau_row = _fetchone(
+        f"SELECT COUNT(DISTINCT user_id) AS c FROM growth_events "
+        f"WHERE user_id IS NOT NULL AND event_type IN ('first_delivery', 'delivery', 'mini_app_open') "
+        f"AND {date_expr} = CURRENT_DATE"
+        if _using_pg else
+        "SELECT COUNT(DISTINCT user_id) AS c FROM growth_events "
+        "WHERE user_id IS NOT NULL AND event_type IN ('first_delivery', 'delivery', 'mini_app_open') "
+        "AND date(created_at)=date('now')"
+    )
+    wau_row = _fetchone(
+        f"SELECT COUNT(DISTINCT user_id) AS c FROM growth_events "
+        f"WHERE user_id IS NOT NULL AND event_type IN ('first_delivery', 'delivery', 'mini_app_open') "
+        f"AND created_at >= {active_since}"
+    )
+
+    if _using_pg:
+        retention_sql = f"""
+            WITH cohorts AS (
+              SELECT user_id, MIN(created_at)::date AS cohort_date
+              FROM growth_events WHERE event_type='start' AND user_id IS NOT NULL GROUP BY user_id
+            ),
+            activity AS (
+              SELECT DISTINCT user_id, created_at::date AS activity_date
+              FROM growth_events
+              WHERE user_id IS NOT NULL AND event_type IN ('first_delivery', 'delivery', 'mini_app_open')
+            )
+            SELECT COUNT(*) FILTER (WHERE cohort_date <= CURRENT_DATE - 1) AS d1_eligible,
+                   COUNT(*) FILTER (WHERE cohort_date <= CURRENT_DATE - 1 AND EXISTS (
+                     SELECT 1 FROM activity a WHERE a.user_id=c.user_id AND a.created_at=c.cohort_date+1)) AS d1,
+                   COUNT(*) FILTER (WHERE cohort_date <= CURRENT_DATE - 7) AS d7_eligible,
+                   COUNT(*) FILTER (WHERE cohort_date <= CURRENT_DATE - 7 AND EXISTS (
+                     SELECT 1 FROM activity a WHERE a.user_id=c.user_id AND a.created_at=c.cohort_date+7)) AS d7
+            FROM cohorts c
+        """
+    else:
+        retention_sql = """
+            WITH cohorts AS (
+              SELECT user_id, date(MIN(created_at)) AS cohort_date
+              FROM growth_events WHERE event_type='start' AND user_id IS NOT NULL GROUP BY user_id
+            ),
+            activity AS (
+              SELECT DISTINCT user_id, date(created_at) AS activity_date
+              FROM growth_events
+              WHERE user_id IS NOT NULL AND event_type IN ('first_delivery', 'delivery', 'mini_app_open')
+            )
+            SELECT SUM(CASE WHEN cohort_date <= date('now','-1 day') THEN 1 ELSE 0 END) AS d1_eligible,
+                   SUM(CASE WHEN cohort_date <= date('now','-1 day') AND EXISTS (
+                     SELECT 1 FROM activity a WHERE a.user_id=c.user_id AND a.activity_date=date(c.cohort_date,'+1 day')) THEN 1 ELSE 0 END) AS d1,
+                   SUM(CASE WHEN cohort_date <= date('now','-7 days') THEN 1 ELSE 0 END) AS d7_eligible,
+                   SUM(CASE WHEN cohort_date <= date('now','-7 days') AND EXISTS (
+                     SELECT 1 FROM activity a WHERE a.user_id=c.user_id AND a.activity_date=date(c.cohort_date,'+7 days')) THEN 1 ELSE 0 END) AS d7
+            FROM cohorts c
+        """
+    retention = _fetchone(retention_sql)
+    return {
+        "days": days,
+        "funnel": funnel,
+        "sources": [dict(row) for row in sources],
+        "dau": int(dau_row["c"] if dau_row else 0),
+        "wau": int(wau_row["c"] if wau_row else 0),
+        "retention": {
+            key: int((retention[key] if retention else 0) or 0)
+            for key in ("d1", "d1_eligible", "d7", "d7_eligible")
+        },
+    }
+
+
+def get_user_dashboard(user_id: int) -> dict:
+    """Authenticated Mini App dashboard data for exactly one Telegram user."""
+    ensure_user_exists(user_id)
+    quota = get_user_quota(user_id)
+    streak = get_user_streak(user_id)
+    referrals = get_referral_count(user_id)
+    pending_row = _fetchone(
+        "SELECT pending_referrer_id FROM user_settings WHERE user_id = %s" if _using_pg else
+        "SELECT pending_referrer_id FROM user_settings WHERE user_id = ?",
+        (user_id,),
+    )
+    return {
+        "quota": quota,
+        "streak": streak,
+        "referrals": {
+            "activated": referrals,
+            "bonus_total": get_referral_bonus_total(user_id),
+            "next_premium": ((referrals // 10) + 1) * 10,
+            "pending_attribution": bool(pending_row and pending_row["pending_referrer_id"]),
+        },
+        "premium": is_user_premium(user_id),
+    }
+
 
 # ── Import Jobs ────────────────────────────────────────────────────────────
 

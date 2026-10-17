@@ -49,6 +49,10 @@ class Settings:
     db_path: str = os.getenv("DB_PATH", str(ROOT / "runtime" / "nodick.db"))
     database_url: str = os.getenv("DATABASE_URL", "").strip()
 
+    # Telegram Mini App
+    mini_app_url: str = os.getenv("MINI_APP_URL", "").strip().rstrip("/")
+    bot_username: str = os.getenv("BOT_USERNAME", "Moyechan_bot").strip().lstrip("@")
+
     # Metadata APIs
     stashdb_api_key: str = os.getenv("STASHDB_API_KEY", "").strip()
     stashdb_graphql_url: str = os.getenv(
