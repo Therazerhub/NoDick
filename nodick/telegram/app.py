@@ -59,13 +59,15 @@ from nodick.db import (
     is_user_premium,
     get_user_quota,
     increment_quota,
+    refund_quota,
     bump_streak,
     get_user_streak,
     streak_bar,
     grant_premium,
     revoke_premium,
     list_premium_users,
-    record_referral,
+    set_pending_referral,
+    activate_pending_referral,
     get_referral_count,
     get_referral_bonus_total,
     get_referral_social_proof,
@@ -136,35 +138,48 @@ except ImportError as e:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-WELCOME_MSG_A = """*Welcome to your new favorite addiction.* 🖤
+WELCOME_MSG_A = """*Your private stream is ready.* 🖤
 
-I serve up an endless, organized collection of premium adult videos directly in your chat. No ads, no pop-ups, no bullshit. Just the good stuff, hand-picked and ready to stream instantly. 💦
+⚡ *{remaining} watches available*  `{quota_bar}`
+🔥 *{streak}-day streak*
 
-Hit a button below to get started. 😈
+Pick what you want. One tap, instant delivery.
 
-⚡ _Architected by_ [The Razer](tg://user?id=6001922744) 🔥"""
+⚡ _Built by_ [The Razer](tg://user?id=6001922744)"""
 
-WELCOME_MSG_B = """*Your private stream is ready.* 🖤
+WELCOME_MSG_B = """*{video_count:,}+ videos. Pick one.* 🖤
 
-🔥 *{video_count:,}+ videos unlocked*
-⚡ *5 free watches waiting*
-🚫 No ads. No pop-ups. Instant streaming.
+⚡ *{remaining} watches available*  `{quota_bar}`
+🔥 *{streak}-day streak*
 
-Tap *🎲 Surprise Me* and start watching. 😈
+Try *🎲 Surprise Me* or search the library.
 
-⚡ _Architected by_ [The Razer](tg://user?id=6001922744) 🔥"""
+⚡ _Built by_ [The Razer](tg://user?id=6001922744)"""
 
 
 def _welcome_message(user_id: int | None) -> str:
     """Return the user's stable onboarding experiment variant."""
     if user_id is None:
-        return WELCOME_MSG_A
+        return WELCOME_MSG_A.format(remaining=5, quota_bar="▮▮▮▮▮", streak=0)
     variant = get_welcome_variant(user_id)
     if variant:
         mark_welcome_exposure(user_id)
-    if variant == "B":
-        return WELCOME_MSG_B.format(video_count=db_video_count())
-    return WELCOME_MSG_A
+    quota = get_user_quota(user_id)
+    streak = get_user_streak(user_id)["streak"]
+    if quota["is_premium"]:
+        remaining, quota_bar = "Unlimited", "▮▮▮▮▮"
+    else:
+        remaining = quota["remaining"]
+        width = 5
+        filled = min(width, round(width * quota["remaining"] / max(1, quota["limit"])))
+        quota_bar = "▮" * filled + "▯" * (width - filled)
+    values = {
+        "video_count": db_video_count(),
+        "remaining": remaining,
+        "quota_bar": quota_bar,
+        "streak": streak,
+    }
+    return (WELCOME_MSG_B if variant == "B" else WELCOME_MSG_A).format(**values)
 
 
 def _parse_start_payload(payload: str | None) -> tuple[int | None, int | None]:
@@ -216,7 +231,11 @@ def _get_force_join_channels() -> list[dict]:
     except (json.JSONDecodeError, TypeError):
         return []
 
-async def _check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+async def _check_force_join(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    pending_action: str | None = None,
+) -> bool:
     if _is_admin(update):
         return False
     channels = _get_force_join_channels()
@@ -235,6 +254,10 @@ async def _check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             not_joined.append(ch)
     if not not_joined:
         return False
+    if pending_action:
+        context.user_data["pending_after_join"] = pending_action
+    else:
+        context.user_data.pop("pending_after_join", None)
     text = (
         "🔒 *Hold up, curious one…*\n\n"
         "You need to join our channels first before I let you in. 😈\n\n"
@@ -271,6 +294,36 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await q.answer(f"❌ Still not joined: {names}", show_alert=True)
         return
     await q.answer("✅ Verified! Welcome in… 😏")
+    pending_action = context.user_data.pop("pending_after_join", None)
+    if pending_action:
+        if pending_action.startswith("video:"):
+            video_id = int(pending_action.split(":", 1)[1])
+            try:
+                await q.message.delete()
+            except Exception:
+                pass
+            await _deliver_with_quota(
+                update, context, video_id, allow_redirect=False
+            )
+            return
+        if pending_action == "random":
+            limit = get_user_size_limit(user_id)
+            row = db_random(limit)
+            if row:
+                try:
+                    await q.message.delete()
+                except Exception:
+                    pass
+                await _deliver_with_quota(
+                    update, context, row["id"], allow_redirect=True
+                )
+                return
+            await q.edit_message_text(
+                "🥺 The library is empty. Try again after the next import.",
+                reply_markup=main_menu(user_id),
+            )
+            return
+
     markup = main_menu(user_id)
     welcome_text = _welcome_message(user_id)
     welcome_gif = get_bot_setting("welcome_gif", "")
@@ -477,6 +530,43 @@ def _caption_from_cache(
     return f"{head}\n{body}"
 
 
+async def _notify_referral_activation(context, user_id: int) -> None:
+    """Credit and notify a referral only after the first delivered video."""
+    try:
+        bonus = max(1, int(get_bot_setting("referral_bonus", "10") or "10"))
+        result = activate_pending_referral(user_id, bonus)
+    except Exception:
+        log.exception("Referral activation failed for user %s", user_id)
+        return
+    if not result:
+        return
+    referrer_id = result["referrer_id"]
+    refs = result["count"]
+    if result["premium_awarded"]:
+        text = (
+            f"🎉 *Premium unlocked!*\n\n"
+            f"You reached *{refs} activated referrals* and earned *30 days Premium*. 👑\n"
+            f"Your next Premium reward is at *{refs + 10}*."
+        )
+        log_text = f"Referral activated: `{user_id}` → `{referrer_id}`; {refs} total, Premium awarded"
+    else:
+        next_milestone = ((refs // 10) + 1) * 10
+        needed = next_milestone - refs
+        text = (
+            f"🎁 *Referral activated!*\n\n"
+            f"You earned *+{bonus} bonus watches*.\n"
+            f"Only *{needed} more* for 30 days Premium."
+        )
+        log_text = f"Referral activated: `{user_id}` → `{referrer_id}` (+{bonus})"
+    await _log_event(context, log_text)
+    try:
+        await context.bot.send_message(
+            chat_id=referrer_id, text=text, parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception:
+        log.debug("Could not notify referrer %s", referrer_id)
+
+
 async def _enrich_and_send(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -492,7 +582,7 @@ async def _enrich_and_send(
     if not row:
         if update.callback_query:
             await update.callback_query.answer("Missing video", show_alert=True)
-        return
+        return False
 
     filename = row["title"] or ""
 
@@ -508,32 +598,10 @@ async def _enrich_and_send(
                 if not row:
                     if update.callback_query:
                         await update.callback_query.answer("Missing video", show_alert=True)
-                    return
+                    return False
                 filename = row["title"] or ""
 
-    increment_view(video_id)
     chat_id = update.effective_chat.id
-
-    # Watch streak — update for every user that actually lands here (a video
-    # was sent). Single choke point so random/play/redirect all count once.
-    if update.effective_user:
-        streak = bump_streak(update.effective_user.id)
-
-        # Celebrate a new personal best + confirmation it saved.
-        # Reply to the sent video lazily — no need to force into caption.
-        if streak["new_record"] and streak["streak"] >= 3:
-            try:
-                new_record_msg = f"🔥 *{streak['streak']}-day streak!* New personal best.\n"
-                if not is_user_premium(update.effective_user.id):
-                    new_record_msg += f"⚡ Streak active → *+{streak['bonus']}* bonus watches daily."
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"{new_record_msg}",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-            except Exception as e:
-                log.debug("Did not send streak milestone message: %s", e)
-    
     meta = get_video_metadata(video_id)
     row_dict = dict(row)
     row_tags = [t for t in (row_dict.get("tags") or "").split(",") if t]
@@ -624,17 +692,56 @@ async def _enrich_and_send(
         context.bot, chat_id, row["file_id"], caption_text, markup
     )
     log.info("_enrich_and_send: _send_video_ref returned successfully")
-    if update.effective_user:
-        mark_welcome_conversion(update.effective_user.id)
-    
-    await _maybe_send_ad(update, context)
-    
-    if delete_mins is not None:
-        _schedule_auto_delete(context, chat_id, sent_msg, delete_mins)
 
-    # Lazy size backfill — fire-and-forget when we don't know the size yet
+    # Telegram has confirmed delivery. Everything below is best-effort
+    # bookkeeping and must never turn a successful send into a quota refund.
+    try:
+        increment_view(video_id)
+    except Exception:
+        log.exception("Post-send view bookkeeping failed for video %s", video_id)
+
+    if update.effective_user:
+        user_id = update.effective_user.id
+        streak = None
+        try:
+            streak = bump_streak(user_id)
+            mark_welcome_conversion(user_id)
+        except Exception:
+            log.exception("Post-send user bookkeeping failed for user %s", user_id)
+        try:
+            await _notify_referral_activation(context, user_id)
+        except Exception:
+            log.exception("Post-send referral notification failed for user %s", user_id)
+        if streak and streak["new_record"] and streak["streak"] >= 3:
+            try:
+                new_record_msg = f"🔥 *{streak['streak']}-day streak!* New personal best.\n"
+                if not is_user_premium(user_id):
+                    new_record_msg += f"⚡ Streak active → *+{streak['bonus']}* bonus watches daily."
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=new_record_msg,
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception as e:
+                log.debug("Did not send streak milestone message: %s", e)
+
+    try:
+        await _maybe_send_ad(update, context)
+    except Exception:
+        log.exception("Post-send ad delivery failed")
+
+    if delete_mins is not None:
+        try:
+            _schedule_auto_delete(context, chat_id, sent_msg, delete_mins)
+        except Exception:
+            log.exception("Post-send auto-delete scheduling failed")
+
     if not row.get("file_size"):
-        asyncio.create_task(_lazy_fill_size(video_id, row["file_id"]))
+        try:
+            asyncio.create_task(_lazy_fill_size(video_id, row["file_id"]))
+        except Exception:
+            log.exception("Post-send lazy size task failed")
+    return True
 
 
 def _duration(seconds: Optional[int]) -> str:
@@ -658,6 +765,66 @@ async def _replace_with_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
 
 
+async def _send_quota_exhausted(update: Update, context) -> None:
+    quota = get_user_quota(update.effective_user.id)
+    text = (
+        "🚫 *Your free watches are used up.*\n\n"
+        f"📊 `{quota['used']}/{quota['limit']}` used\n"
+        "🎁 Activate referrals for bonus watches, or unlock Premium."
+    )
+    markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer"),
+            InlineKeyboardButton("👑 Premium", callback_data="get_premium"),
+        ],
+        [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+    ])
+    if update.callback_query:
+        try:
+            await update.callback_query.answer(
+                "Free watches used up", show_alert=True
+            )
+        except Exception:
+            pass
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        reply_markup=markup,
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def _deliver_with_quota(
+    update: Update,
+    context,
+    video_id: int,
+    *,
+    allow_redirect: bool,
+) -> bool:
+    """Reserve atomically, deliver, and refund any failed reservation."""
+    user_id = update.effective_user.id
+    charged = not _is_admin(update) and not is_user_premium(user_id)
+    if charged and not increment_quota(user_id):
+        await _send_quota_exhausted(update, context)
+        return False
+    if getattr(update, "callback_query", None):
+        try:
+            await update.callback_query.answer("Loading…")
+        except Exception:
+            pass
+    try:
+        delivered = await _enrich_and_send(
+            update, context, video_id, allow_redirect=allow_redirect
+        )
+        if not delivered and charged:
+            refund_quota(user_id)
+        return bool(delivered)
+    except Exception:
+        if charged:
+            refund_quota(user_id)
+        raise
+
+
 # ── Command: /start ────────────────────────────────────────────────────────
 
 
@@ -671,72 +838,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_new:
             get_or_assign_welcome_variant(user.id)
             if start_referrer_id is not None:
-                try:
-                    referrer_id = start_referrer_id
-                    bonus = max(1, int(get_bot_setting("referral_bonus", "10") or "10"))
-                    if record_referral(referrer_id, user.id, bonus):
-                        refs = get_referral_count(referrer_id)
-                        next_milestone = ((refs // 10) + 1) * 10
-                        needed = next_milestone - refs
-                        if refs % 10 == 0:
-                            grant_premium(referrer_id, 30)
-                            await _log_event(context, f"✅ Referral confirmed: `{user.id}` joined via `{referrer_id}`. 🎁 Referrer hit {refs} and got 30 days Premium!")
-                            reward_text = (
-                                f"🎉 *Premium unlocked!*\n\n"
-                                f"You hit *{refs} successful invites* and earned *1 Month of Premium*. 👑\n\n"
-                                f"Your next Premium drop is at *{refs + 10}* invites."
-                            )
-                        else:
-                            await _log_event(context, f"✅ Referral confirmed: `{user.id}` joined via `{referrer_id}` (+{bonus} watches)")
-                            reward_text = (
-                                f"🎁 *Referral confirmed!*\n\n"
-                                f"You earned *+{bonus} bonus watches*.\n"
-                                f"Only *{needed} more* until your next month of Premium at *{next_milestone} invites*."
-                            )
-                        try:
-                            await context.bot.send_message(
-                                chat_id=referrer_id,
-                                text=reward_text,
-                                parse_mode=ParseMode.MARKDOWN,
-                            )
-                        except Exception:
-                            pass
-                except ValueError:
-                    pass
+                # Attribution is pending until the new user passes force-join
+                # and receives a first video. Empty starts earn nothing.
+                set_pending_referral(start_referrer_id, user.id)
             username = f"@{user.username}" if user.username else "No username"
             full_name = filter(None, [user.first_name, user.last_name])
             name_str = " ".join(full_name) or "Unknown"
             await _log_event(context, f"👤 *New User*\nID: `{user.id}`\nUsername: {username}\nName: {name_str}")
             
     if start_video_id is not None:
-        if await _check_force_join(update, context):
+        if await _check_force_join(
+            update, context, pending_action=f"video:{start_video_id}"
+        ):
             return
         try:
             vid_id = start_video_id
-            # Quota Check logic
-            if not _is_admin(update) and not is_user_premium(user.id):
-                from nodick.db import increment_quota, get_user_quota
-                if not increment_quota(user.id):
-                    quota = get_user_quota(user.id)
-                    text = (
-                        "🚫 *You've used all your free watches!*\n\n"
-                        f"📊 Used: {quota['used']}/{quota['limit']}\n\n"
-                        "💡 *Get more:*\n"
-                        "🔗 Refer friends to earn +10 each\n"
-                        "👑 Or grab Premium for unlimited access\n"
-                    )
-                    markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer")],
-                        [InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")],
-                        [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-                    ])
-                    await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-                    return
-            
-            await _enrich_and_send(update, context, vid_id, allow_redirect=True)
+            await _deliver_with_quota(
+                update, context, vid_id, allow_redirect=False
+            )
             return
         except Exception as e:
-            log.error(f"Error handling vid deep link: {e}")
+            log.error("Error handling video deep link: %s", e, exc_info=True)
 
     if await _check_force_join(update, context):
         return
@@ -798,46 +920,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def random_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await _check_force_join(update, context):
+    if await _check_force_join(update, context, pending_action="random"):
         return
-        
-    if not _is_admin(update) and not is_user_premium(update.effective_user.id):
-        if not increment_quota(update.effective_user.id):
-            quota = get_user_quota(update.effective_user.id)
-            text = (
-                "🚫 *You've used all your free watches!*\n\n"
-                f"📊 Used: {quota['used']}/{quota['limit']}\n\n"
-                "💡 *Get more:*\n"
-                "🔗 Refer friends to earn +10 each\n"
-                "👑 Or grab Premium for unlimited access\n"
-            )
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer")],
-                [InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")],
-                [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-            ])
-            if update.callback_query:
-                try:
-                    await update.callback_query.answer("⚠️ Free completely used up!", show_alert=True)
-                except Exception:
-                    pass
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id, 
-                text=text, 
-                reply_markup=markup, 
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
 
-    # Don't pre-answer — let _enrich_and_send handle it (or error handler on failure)
     limit = get_user_size_limit(update.effective_user.id) if update.effective_user else None
     row = db_random(limit)
     if not row:
-        text = "🥺 NoDick is empty. Send a video or use /import."
+        text = "🥺 The library is empty. Try again after the next import."
         if update.callback_query:
             await update.callback_query.answer()
-            await update.callback_query.edit_message_text(
-                text, reply_markup=main_menu(update.effective_user.id)
+            await _replace_with_text(
+                update, context, text, main_menu(update.effective_user.id)
             )
         else:
             await update.message.reply_text(
@@ -845,9 +938,10 @@ async def random_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    log.info("random_video: calling _enrich_and_send for video_id=%s", row["id"])
-    await _enrich_and_send(update, context, row["id"])
-    log.info("random_video: _enrich_and_send returned")
+    log.info("random_video: delivering video_id=%s", row["id"])
+    await _deliver_with_quota(
+        update, context, row["id"], allow_redirect=True
+    )
 
 
 # ── Command: /search ───────────────────────────────────────────────────────
@@ -879,6 +973,7 @@ async def _show_search(
     page: int = 0,
 ):
     per_page = 10
+    context.user_data["search_query"] = query
     limit = get_user_size_limit(update.effective_user.id) if update.effective_user else None
     rows, total = search_videos(query, page=page, per_page=per_page, max_size_mb=limit)
 
@@ -899,13 +994,13 @@ async def _show_search(
         if page > 0:
             nav.append(
                 InlineKeyboardButton(
-                    "⬅️", callback_data=f"searchpage_{query}|{page - 1}"
+                    "⬅️", callback_data=f"searchpage_{page - 1}"
                 )
             )
         if (page + 1) * per_page < total:
             nav.append(
                 InlineKeyboardButton(
-                    "➡️", callback_data=f"searchpage_{query}|{page + 1}"
+                    "➡️", callback_data=f"searchpage_{page + 1}"
                 )
             )
         if nav:
@@ -923,9 +1018,14 @@ async def _show_search(
 async def search_page_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    _, payload = q.data.split("_", 1)
-    query, page = payload.rsplit("|", 1)
-    await _show_search(update, context, query=query, page=int(page))
+    page = int((q.data or "searchpage_0").split("_", 1)[1])
+    query = context.user_data.get("search_query")
+    if not query:
+        await _replace_with_text(
+            update, context, "⌛ Search expired. Start a new search.", back()
+        )
+        return
+    await _show_search(update, context, query=query, page=page)
 
 
 # ── Command: /stats ────────────────────────────────────────────────────────
@@ -992,12 +1092,14 @@ async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "📁 No categories yet."
         markup = back()
     else:
+        category_tokens = {str(i): cat["category"] for i, cat in enumerate(cats)}
+        context.user_data["category_tokens"] = category_tokens
         buttons = [
             InlineKeyboardButton(
                 f"{cat['category']} ({cat['count']})",
-                callback_data=f"cat_{cat['category']}",
+                callback_data=f"cat_{i}",
             )
-            for cat in cats
+            for i, cat in enumerate(cats)
         ]
         # 2 per row
         rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
@@ -1014,16 +1116,23 @@ async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    data = q.data
-
+    data = q.data or ""
+    token = ""
     if data.startswith("cat_"):
-        category = data.split("_", 1)[1]
+        token = data.split("_", 1)[1]
         page = 0
     elif data.startswith("catpage_"):
         _, payload = data.split("_", 1)
-        category, page = payload.rsplit("|", 1)
+        token, page = payload.rsplit("|", 1)
         page = int(page)
     else:
+        return
+
+    category = context.user_data.get("category_tokens", {}).get(token)
+    if not category:
+        await _replace_with_text(
+            update, context, "⌛ Category menu expired. Open Categories again.", back()
+        )
         return
 
     per_page = 10
@@ -1046,13 +1155,13 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if page > 0:
         nav.append(
             InlineKeyboardButton(
-                "⬅️", callback_data=f"catpage_{category}|{page - 1}"
+                "⬅️", callback_data=f"catpage_{token}|{page - 1}"
             )
         )
     if (page + 1) * per_page < total:
         nav.append(
             InlineKeyboardButton(
-                "➡️", callback_data=f"catpage_{category}|{page + 1}"
+                "➡️", callback_data=f"catpage_{token}|{page + 1}"
             )
         )
     if nav:
@@ -1071,11 +1180,12 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     q = update.callback_query
     user_id = update.effective_user.id
-    await q.answer()
+    if q:
+        await q.answer()
 
     page = 0
-    if q.data.startswith("favpage_"):
-        page = int(q.data.split("_", 1)[1])
+    if q and (q.data or "").startswith("favpage_"):
+        page = int((q.data or "").split("_", 1)[1])
 
     per_page = 10
     rows, total = get_favorites(
@@ -1083,7 +1193,11 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE):
         max_size_mb=get_user_size_limit(user_id),
     )
     if not rows:
-        await _replace_with_text(update, context, "⭐ No favorites yet. Tap 💦 on a video to save it.", main_menu(user_id))
+        text = "⭐ No saved videos yet. Tap ♡ Save on any video."
+        if q:
+            await _replace_with_text(update, context, text, main_menu(user_id))
+        else:
+            await update.message.reply_text(text, reply_markup=main_menu(user_id))
         return
 
     buttons = [
@@ -1108,7 +1222,12 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append(nav)
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
 
-    await _replace_with_text(update, context, f"⭐ Favorites — {len(rows)} of {total}", InlineKeyboardMarkup(buttons))
+    text = f"⭐ Saved — {len(rows)} of {total}"
+    markup = InlineKeyboardMarkup(buttons)
+    if q:
+        await _replace_with_text(update, context, text, markup)
+    else:
+        await update.message.reply_text(text, reply_markup=markup)
 
 
 async def add_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1124,41 +1243,15 @@ async def add_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await _check_force_join(update, context):
-        return
-        
-    if not _is_admin(update) and not is_user_premium(update.effective_user.id):
-        if not increment_quota(update.effective_user.id):
-            quota = get_user_quota(update.effective_user.id)
-            text = (
-                "🚫 *You've used all your free watches!*\n\n"
-                f"📊 Used: {quota['used']}/{quota['limit']}\n\n"
-                "💡 *Get more:*\n"
-                "🔗 Refer friends to earn +10 each\n"
-                "👑 Or grab Premium for unlimited access\n"
-            )
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer")],
-                [InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")],
-                [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-            ])
-            if update.callback_query:
-                try:
-                    await update.callback_query.answer("⚠️ Free completely used up!", show_alert=True)
-                except Exception:
-                    pass
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id, 
-                text=text, 
-                reply_markup=markup, 
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-
     q = update.callback_query
-    await q.answer("Loading...")
     video_id = int(q.data.split("_", 1)[1])
-    await _enrich_and_send(update, context, video_id, allow_redirect=False)
+    if await _check_force_join(
+        update, context, pending_action=f"video:{video_id}"
+    ):
+        return
+    await _deliver_with_quota(
+        update, context, video_id, allow_redirect=False
+    )
 
 
 # ── Command: /threshold ────────────────────────────────────────────────────
@@ -1474,6 +1567,7 @@ async def import_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Videos: {row['videos_found']}\n"
             f"Saved: {row['saved']}\n"
             f"Skipped: {row['skipped']}\n"
+            f"Resume ID: {row.get('next_message_id') or '-'}\n"
             f"Error: {row['error'] or '-'}"
         )
     )
@@ -1530,11 +1624,12 @@ async def _start_message_import(
     channel_id: int,
     start_id: int,
 ):
-    """Fire up the MessageIDImporter."""
+    """Fire up the MessageIDImporter with persisted status and checkpoint."""
     user_id = update.effective_user.id
+    job_id = create_import_job(str(channel_id), user_id)
     message = update.message or update.callback_query.message
     status_msg = await message.reply_text(
-        f"🛰 Scanning {channel_id} from message {start_id} down..."
+        f"🛰 Scan #{job_id}: `{channel_id}` from message `{start_id}`"
     )
 
     importer = MessageIDImporter(context.bot, staging_chat_id=user_id)
@@ -1559,15 +1654,30 @@ async def _start_message_import(
         stats = await importer.import_channel(
             channel_id=channel_id,
             start_message_id=start_id,
+            job_id=job_id,
             progress=progress,
         )
 
+        next_id = int(stats.get("next_message_id") or 0)
+        if stats.get("status") == "failed":
+            if next_id > 0:
+                set_bot_setting("scan_last_message_id", str(next_id))
+            await status_msg.edit_text(
+                f"❌ Scan #{job_id} failed.\n"
+                f"Checked: {stats['total_checked']:,}\n"
+                f"Resume ID: {next_id or start_id}\n\n"
+                "Open Import Status for the recorded error."
+            )
+            return
+
+        set_bot_setting("scan_last_message_id", "")
         await status_msg.edit_text(
-            f"✅ Scan complete!\n"
+            f"✅ Scan #{job_id} complete!\n"
             f"Checked: {stats['total_checked']:,}\n"
             f"Videos found: {stats['videos_found']}\n"
             f"Saved: {stats['saved']}\n"
-            f"Skipped: {stats['skipped']}"
+            f"Skipped: {stats['skipped']}\n"
+            "Forward the latest channel video when you want to scan new additions."
         )
     except Exception as e:
         log.exception("Scan failed")
@@ -1666,46 +1776,11 @@ async def scanimport_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     _, channel_id_str, message_id_str = q.data.split("_", 2)
     channel_id = int(channel_id_str)
     message_id = int(message_id_str)
-
     await q.edit_message_text(
-        f"🛰 Starting scan of {channel_id} from message {message_id}..."
+        f"🛰 Preparing scan of `{channel_id}` from `{message_id}`…",
+        parse_mode=ParseMode.MARKDOWN,
     )
-
-    importer = MessageIDImporter(context.bot, staging_chat_id=update.effective_user.id)
-
-    try:
-        async def progress(stats):
-            if (
-                stats.get("total_checked", 0) % 50 == 0
-                or stats.get("status") in {"done", "failed"}
-            ):
-                try:
-                    await q.edit_message_text(
-                        f"🛰 Scan: {stats['status']}\n"
-                        f"Checked: {stats['total_checked']:,}\n"
-                        f"Videos: {stats['videos_found']}\n"
-                        f"Saved: {stats['saved']}\n"
-                        f"Skipped: {stats['skipped']}"
-                    )
-                except Exception:
-                    pass
-
-        stats = await importer.import_channel(
-            channel_id=channel_id,
-            start_message_id=message_id,
-            progress=progress,
-        )
-
-        await q.edit_message_text(
-            f"✅ Scan complete!\n"
-            f"Checked: {stats['total_checked']:,}\n"
-            f"Videos found: {stats['videos_found']}\n"
-            f"Saved: {stats['saved']}\n"
-            f"Skipped: {stats['skipped']}"
-        )
-    except Exception as e:
-        log.exception("Scan failed")
-        await q.edit_message_text(f"❌ Scan failed: {e}")
+    await _start_message_import(update, context, channel_id, message_id)
 
 
 # ── Video upload handler ───────────────────────────────────────────────────
@@ -1713,6 +1788,9 @@ async def scanimport_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+    if not _is_admin(update):
+        await msg.reply_text("🔒 Only approved admins can add videos to the library.")
+        return
     video = msg.video or (
         msg.document
         if msg.document and msg.document.mime_type
@@ -1960,8 +2038,11 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Check if waiting for correction text
-    if context.user_data.pop("waiting_for_correction", None):
-        await _handle_correction_text(update, context, text)
+    correction_video_id = context.user_data.pop("waiting_for_correction", None)
+    if correction_video_id is not None:
+        await _handle_correction_text(
+            update, context, text, int(correction_video_id)
+        )
         return
 
     # Otherwise, treat as search
@@ -1985,9 +2066,11 @@ async def handle_correct_callback(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def _handle_correction_text(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    video_id: int,
 ):
-    video_id = context.user_data["waiting_for_correction"]
     # Parse correction
     performer, title = None, text
     if " — " in text:
@@ -2151,16 +2234,18 @@ async def adfreq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_rename_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer("Rename will be available via auto_rename module 📝")
+    await q.answer("Send the replacement title")
     video_id = int(q.data.split("_", 1)[1])
     meta = get_video_metadata(video_id)
+    suggested = ""
     if meta and meta.get("stashdb_title"):
         suggested = f"{meta['stashdb_performer'] or ''} — {meta['stashdb_title']}".strip(" —")
-        await q.edit_message_text(
-            f"📝 Suggested rename: `{suggested}`\n\n"
-            f"Use /correct to apply a custom name.",
-            reply_markup=back(),
-        )
+    context.user_data["waiting_for_correction"] = video_id
+    text = "📝 *Rename video*\n\n"
+    if suggested:
+        text += f"Suggested: `{suggested}`\n\n"
+    text += "Send `Performer — Title`, or /cancel."
+    await _replace_with_text(update, context, text, back())
 
 
 # ── Error handler ──────────────────────────────────────────────────────────
@@ -2526,7 +2611,8 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    if q:
+        await q.answer()
     user_id = update.effective_user.id
     quota = get_user_quota(user_id)
     ref_count = get_referral_count(user_id)
@@ -2569,7 +2655,13 @@ async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     from nodick.telegram.keyboards import account_keyboard
-    await _replace_with_text(update, context, text, account_keyboard(user_id))
+    markup = account_keyboard(user_id)
+    if q:
+        await _replace_with_text(update, context, text, markup)
+    else:
+        await update.message.reply_text(
+            text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+        )
 
 async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show a share-ready referral card for callbacks and /refer alike."""
@@ -2618,8 +2710,8 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🎁 *Invite & Earn*\n\n"
         f"{social_proof}"
-        f"Invite friends to this adult content bot. Each *new* user who starts through "
-        f"your link gives you *+{bonus} bonus watches* instantly.\n\n"
+        f"Invite friends to this adult content bot. Each *new* user who joins and watches "
+        f"their first video gives you *+{bonus} bonus watches*.\n\n"
         f"👑 *Premium milestone*\n"
         f"{progress_bar} *{tier_progress}/{milestone}* toward your next month of Premium\n"
         f"Only *{needed} more* referral{'s' if needed != 1 else ''} until *{next_milestone} total*.\n\n"
@@ -2655,7 +2747,8 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    if q:
+        await q.answer()
     payment_info = get_bot_setting("payment_info", "")
     if not payment_info or payment_info == "Contact admin for payment details." or payment_info == "Not set":
         payment_info = f"UPI: `razerx@ptaxis`\n\n_Send the screenshot directly to_ 💎 @TheRazerhub _and I'll activate it within minutes._ 🔥"
@@ -2671,19 +2764,24 @@ async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     
     qr_id = get_bot_setting("payment_qr", "")
     if qr_id:
-        try:
-            await q.message.delete()
-        except Exception:
-            pass
+        if q:
+            try:
+                await q.message.delete()
+            except Exception:
+                pass
         await context.bot.send_photo(
-            chat_id=q.message.chat_id,
+            chat_id=update.effective_chat.id,
             photo=qr_id,
             caption=text,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=back()
         )
-    else:
+    elif q:
         await _replace_with_text(update, context, text, back())
+    else:
+        await update.message.reply_text(
+            text, reply_markup=back(), parse_mode=ParseMode.MARKDOWN
+        )
 
 async def grantadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update): return

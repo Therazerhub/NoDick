@@ -104,8 +104,8 @@ Telegram UI ◄── search / random / cast / similar / categories
 
 - **🚀 Multi-channel autoposter** with cooldowns and repeat avoidance.
 - **🫥 SFW teaser generation** using heavily blurred source artwork or thumbnails.
-- **🎁 Invite & Earn** with configurable watch bonuses.
-- **👑 Premium milestones** — every ten successful referrals grants 30 days.
+- **🎁 Invite & Earn** credits only activated referrals after their first successful delivery.
+- **👑 Premium milestones** — every ten activated referrals grants 30 days.
 - **🔥 Watch streaks** with escalating daily quota bonuses.
 - **📤 Viral video sharing** — shared links open the exact video and attribute new users.
 - **🧪 Welcome A/B tests** measuring real exposure-to-first-watch conversion.
@@ -119,6 +119,9 @@ Telegram UI ◄── search / random / cast / similar / categories
 - Configurable force-join channels, auto-delete timers, ads, payment copy and QR.
 - Restart, uptime, new-user, referral and Premium event logging.
 - Flood-control retries for Telegram channel copies.
+- Atomic quota reservations with automatic refunds when delivery fails.
+- Indexed browse/referral paths and non-blocking poster image processing.
+- Resumable channel scans with persisted progress and bounded network retries.
 
 ---
 
@@ -200,8 +203,9 @@ NoDick/
 │   │   └── session.py           # Telegram session login
 │   ├── backfill_metadata.py
 │   └── backfill_sizes.py
+├── .dockerignore                 # Excludes secrets, sessions and local state
 ├── Dockerfile
-├── render.yaml
+├── render.yaml                   # Secret values supplied by Render dashboard
 └── requirements.txt
 ```
 
@@ -322,7 +326,9 @@ The container starts the Telegram bot and exposes its health server through the 
 
 - Keep `BOT_TOKEN`, API keys, session files and database URLs out of Git.
 - Configure production secrets through the Render dashboard or your hosting platform.
-- Restrict bot administration to the configured owner and explicitly granted admins.
+- Restrict bot administration and library indexing to the configured owner and explicitly granted admins.
+- `render.yaml` declares secrets with `sync: false`; supply values only in the Render dashboard.
+- `.dockerignore` prevents local databases, sessions, virtualenvs and `.env` files from entering images.
 - Use only channels and media you are authorized to index.
 - Rotate credentials immediately if they are ever exposed.
 

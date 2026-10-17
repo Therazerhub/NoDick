@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import logging
@@ -8,7 +9,7 @@ from typing import Optional
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
-from nodick.db import _fetchone, get_bot_setting, get_video
+from nodick.db import _fetchone, _using_pg, get_bot_setting, get_video
 from nodick.metadata.stash import query_api
 
 try:
@@ -225,21 +226,29 @@ def _select_one() -> Optional[dict]:
 
 
 def _select_video() -> Optional[dict]:
-    """Random stash pick, retrying to avoid re-posting the same recent video."""
+    """Pick an unposted candidate with one bounded database query."""
     try:
-        posted = set(json.loads(get_bot_setting("auto_post_posted_ids", "[]") or "[]"))
+        posted = [
+            int(value)
+            for value in json.loads(
+                get_bot_setting("auto_post_posted_ids", "[]") or "[]"
+            )[-400:]
+        ]
     except Exception:
-        posted = set()
+        posted = []
 
-    attempts = 0
-    while attempts < 15:
-        v = _select_one()
-        if not v:
-            return None
-        if v["id"] not in posted or len(posted) == 0:
-            return v
-        attempts += 1
-    # Whole (recent) stash already posted → accept whatever we last pulled
+    if not posted:
+        return _select_one()
+    ph = "%s" if _using_pg else "?"
+    placeholders = ",".join(ph for _ in posted)
+    sql = SELECT_SQL.replace(
+        "ORDER BY RANDOM() LIMIT 1",
+        f"AND v.id NOT IN ({placeholders}) ORDER BY RANDOM() LIMIT 1",
+    )
+    row = _fetchone(sql, tuple(posted))
+    if row:
+        return dict(row)
+    # The recent-history window covers the whole enriched library.
     return _select_one()
 
 
@@ -247,7 +256,7 @@ async def _fetch_teaser_source(video: dict) -> tuple[Optional[bytes], str]:
     """Return the first real image source and its diagnostic label."""
     scene_id = video.get("stashdb_scene_id")
     if scene_id:
-        image = fetch_scene_image(scene_id)
+        image = await asyncio.to_thread(fetch_scene_image, scene_id)
         if image:
             return image, "stashdb"
     image = await fetch_telegram_thumb(video)
@@ -296,7 +305,7 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
         if not img_data:
             log.warning("poster: video %s has no usable image source; trying another", candidate_id)
             continue
-        blurred = create_blurred_thumbnail(img_data)
+        blurred = await asyncio.to_thread(create_blurred_thumbnail, img_data)
         if not blurred:
             log.warning("poster: video %s image could not be rendered; trying another", candidate_id)
             continue

@@ -161,6 +161,7 @@ def _init_pg():
                 quota_used INTEGER DEFAULT 0,
                 quota_limit INTEGER DEFAULT 5,
                 referred_by BIGINT,
+                pending_referrer_id BIGINT,
                 quota_date TEXT,
                 streak_count INTEGER DEFAULT 0,
                 streak_last_date TEXT,
@@ -186,6 +187,7 @@ def _init_pg():
                 videos_found INTEGER DEFAULT 0,
                 saved INTEGER DEFAULT 0,
                 skipped INTEGER DEFAULT 0,
+                next_message_id BIGINT,
                 error TEXT,
                 started_at TIMESTAMP,
                 finished_at TIMESTAMP,
@@ -248,6 +250,7 @@ def _init_pg():
             "quota_used": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_used INTEGER DEFAULT 0",
             "quota_limit": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_limit INTEGER DEFAULT 5",
             "referred_by": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS referred_by BIGINT",
+            "pending_referrer_id": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pending_referrer_id BIGINT",
             "quota_date": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS quota_date TEXT",
             "streak_count": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS streak_count INTEGER DEFAULT 0",
             "streak_last_date": "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS streak_last_date TEXT",
@@ -262,12 +265,26 @@ def _init_pg():
                     cur.execute(sql)
                 except Exception:
                     pass
+
+        cur.execute(
+            "ALTER TABLE import_jobs ADD COLUMN IF NOT EXISTS next_message_id BIGINT"
+        )
         # Fix old limits and reset dates
         try:
             cur.execute("UPDATE user_settings SET quota_limit = 5 WHERE quota_limit = 10")
             cur.execute("UPDATE user_settings SET quota_date = CURRENT_DATE::text WHERE quota_date IS NULL")
         except Exception:
             pass
+
+        # Hot-path indexes: browsing, favorites, referral progress and imports.
+        for sql in (
+            "CREATE INDEX IF NOT EXISTS idx_videos_category_id ON videos(category, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_videos_file_size ON videos(file_size)",
+            "CREATE INDEX IF NOT EXISTS idx_favorites_user_id_id ON favorites(user_id, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_referrals_referrer_id ON referrals(referrer_id)",
+            "CREATE INDEX IF NOT EXISTS idx_import_jobs_created_at ON import_jobs(created_at DESC)",
+        ):
+            cur.execute(sql)
 
 
 def _init_sqlite():
@@ -323,6 +340,7 @@ def _init_sqlite():
         quota_used INTEGER DEFAULT 0,
         quota_limit INTEGER DEFAULT 5,
         referred_by INTEGER,
+        pending_referrer_id INTEGER,
         quota_date TEXT,
         streak_count INTEGER DEFAULT 0,
         streak_last_date TEXT,
@@ -346,6 +364,7 @@ def _init_sqlite():
         videos_found INTEGER DEFAULT 0,
         saved INTEGER DEFAULT 0,
         skipped INTEGER DEFAULT 0,
+        next_message_id INTEGER,
         error TEXT,
         started_at TIMESTAMP,
         finished_at TIMESTAMP,
@@ -398,6 +417,7 @@ def _init_sqlite():
             "quota_used": "ALTER TABLE user_settings ADD COLUMN quota_used INTEGER DEFAULT 0",
             "quota_limit": "ALTER TABLE user_settings ADD COLUMN quota_limit INTEGER DEFAULT 5",
             "referred_by": "ALTER TABLE user_settings ADD COLUMN referred_by INTEGER",
+            "pending_referrer_id": "ALTER TABLE user_settings ADD COLUMN pending_referrer_id INTEGER",
             "quota_date": "ALTER TABLE user_settings ADD COLUMN quota_date TEXT",
             "streak_count": "ALTER TABLE user_settings ADD COLUMN streak_count INTEGER DEFAULT 0",
             "streak_last_date": "ALTER TABLE user_settings ADD COLUMN streak_last_date TEXT",
@@ -413,6 +433,12 @@ def _init_sqlite():
                 except sqlite3.OperationalError:
                     pass
 
+        import_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(import_jobs)")
+        }
+        if "next_message_id" not in import_columns:
+            conn.execute("ALTER TABLE import_jobs ADD COLUMN next_message_id INTEGER")
+
         # Retroactive migration: ensure referrals table exists (added in 2025-05)
         try:
             conn.execute(
@@ -425,6 +451,15 @@ def _init_sqlite():
             )
         except sqlite3.OperationalError:
             pass
+
+        for sql in (
+            "CREATE INDEX IF NOT EXISTS idx_videos_category_id ON videos(category, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_videos_file_size ON videos(file_size)",
+            "CREATE INDEX IF NOT EXISTS idx_favorites_user_id_id ON favorites(user_id, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_referrals_referrer_id ON referrals(referrer_id)",
+            "CREATE INDEX IF NOT EXISTS idx_import_jobs_created_at ON import_jobs(created_at DESC)",
+        ):
+            conn.execute(sql)
 
 
 # ── Video CRUD ──────────────────────────────────────────────────────────
@@ -527,13 +562,28 @@ def get_video(video_id: int) -> Optional[dict]:
 
 
 def random_video(max_size_mb: Optional[int] = None) -> Optional[dict]:
-    if max_size_mb:
-        ph = "%s" if _using_pg else "?"
-        return _fetchone(
-            f"SELECT * FROM videos WHERE file_size IS NULL OR file_size <= {ph} ORDER BY RANDOM() LIMIT 1",
-            (max_size_mb * 1024 * 1024,),
-        )
-    return _fetchone("SELECT * FROM videos ORDER BY RANDOM() LIMIT 1")
+    """Indexed random pick without a full-table ``ORDER BY RANDOM()`` sort."""
+    import random
+
+    size_chunk, size_params = _size_filter(max_size_mb)
+    bounds = _fetchone(
+        f"SELECT MIN(id) AS min_id, MAX(id) AS max_id FROM videos WHERE 1=1{size_chunk}",
+        size_params,
+    )
+    if not bounds or bounds["min_id"] is None or bounds["max_id"] is None:
+        return None
+    target = random.randint(int(bounds["min_id"]), int(bounds["max_id"]))
+    ph = "%s" if _using_pg else "?"
+    row = _fetchone(
+        f"SELECT * FROM videos WHERE id >= {ph}{size_chunk} ORDER BY id LIMIT 1",
+        (target,) + size_params,
+    )
+    if row:
+        return row
+    return _fetchone(
+        f"SELECT * FROM videos WHERE id < {ph}{size_chunk} ORDER BY id LIMIT 1",
+        (target,) + size_params,
+    )
 
 
 def increment_view(video_id: int) -> None:
@@ -1132,62 +1182,131 @@ def get_user_quota(user_id: int) -> dict:
     premium = is_user_premium(user_id)
     if premium:
         return {'used': 0, 'limit': 999999, 'remaining': 999999, 'is_premium': True}
-        
-    row = _fetchone(
-        "SELECT quota_used, quota_limit, quota_date FROM user_settings WHERE user_id = %s" if _using_pg else
-        "SELECT quota_used, quota_limit, quota_date FROM user_settings WHERE user_id = ?",
-        (user_id,)
-    )
-    if not row:
-        return {'used': 0, 'limit': 5, 'remaining': 5, 'is_premium': False}
-        
-    used = row['quota_used'] if _using_pg else row['quota_used']
-    limit = row['quota_limit'] if _using_pg else row['quota_limit']
-    q_date = row['quota_date'] if _using_pg else row['quota_date']
-    
+
+    ensure_user_exists(user_id)
     from datetime import datetime
     today = datetime.utcnow().date().isoformat()
-    
-    # Lazy Daily Reset check
-    if str(q_date) != today:
-        ph = "%s" if _using_pg else "?"
-        leftover = max(0, limit - used)
-        # Streak bonus rides on top of the leftover+5 accumulator — never
-        # wipes eaten referral earnings, just adds upside for active users.
-        bonus = streak_bonus(get_user_streak(user_id)["streak"])
-        new_limit = leftover + 5 + bonus
-        _execute(
-            f"UPDATE user_settings SET quota_used = 0, quota_limit = {ph}, quota_date = {ph} WHERE user_id = {ph}",
-            (new_limit, today, user_id)
-        )
-        used = 0
-        limit = new_limit
-        
-    return {
-        'used': used,
-        'limit': limit,
-        'remaining': max(0, limit - used),
-        'is_premium': False
-    }
+
+    def _snapshot(conn, pg: bool) -> dict:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                ("SELECT quota_used, quota_limit, quota_date, streak_count "
+                 "FROM user_settings WHERE user_id = %s FOR UPDATE" if pg else
+                 "SELECT quota_used, quota_limit, quota_date, streak_count "
+                 "FROM user_settings WHERE user_id = ?"),
+                (user_id,),
+            )
+            row = cur.fetchone()
+            used = int((row[0] if row else 0) or 0)
+            limit = int((row[1] if row else 5) or 5)
+            quota_date = str((row[2] if row else "") or "")
+            streak = int((row[3] if row else 0) or 0)
+            if quota_date != today:
+                leftover = max(0, limit - used)
+                limit = leftover + 5 + streak_bonus(streak)
+                used = 0
+                cur.execute(
+                    ("UPDATE user_settings SET quota_used = 0, quota_limit = %s, quota_date = %s WHERE user_id = %s" if pg else
+                     "UPDATE user_settings SET quota_used = 0, quota_limit = ?, quota_date = ? WHERE user_id = ?"),
+                    (limit, today, user_id),
+                )
+            return {
+                'used': used,
+                'limit': limit,
+                'remaining': max(0, limit - used),
+                'is_premium': False,
+            }
+        finally:
+            cur.close()
+
+    if _using_pg:
+        import psycopg2 as _psycopg2
+        conn = _psycopg2.connect(settings.database_url)
+        try:
+            quota = _snapshot(conn, True)
+            conn.commit()
+            return quota
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        return _snapshot(conn, False)
 
 
 def increment_quota(user_id: int) -> bool:
+    """Atomically roll over the day and reserve one free watch."""
     if is_user_premium(user_id):
         return True
-        
-    quota = get_user_quota(user_id)
-    if quota['remaining'] <= 0:
-        return False
-        
+
+    ensure_user_exists(user_id)
     from datetime import datetime
     today = datetime.utcnow().date().isoformat()
-    
+
+    def _reserve(conn, pg: bool) -> bool:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                ("SELECT quota_used, quota_limit, quota_date, streak_count "
+                 "FROM user_settings WHERE user_id = %s FOR UPDATE" if pg else
+                 "SELECT quota_used, quota_limit, quota_date, streak_count "
+                 "FROM user_settings WHERE user_id = ?"),
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+            used = int(row[0] or 0)
+            limit = int(row[1] or 5)
+            quota_date = str(row[2] or "")
+            streak = int(row[3] or 0)
+            if quota_date != today:
+                leftover = max(0, limit - used)
+                limit = leftover + 5 + streak_bonus(streak)
+                used = 0
+            if used >= limit:
+                return False
+            cur.execute(
+                ("UPDATE user_settings SET quota_used = %s, quota_limit = %s, quota_date = %s WHERE user_id = %s" if pg else
+                 "UPDATE user_settings SET quota_used = ?, quota_limit = ?, quota_date = ? WHERE user_id = ?"),
+                (used + 1, limit, today, user_id),
+            )
+            return cur.rowcount == 1
+        finally:
+            cur.close()
+
+    if _using_pg:
+        import psycopg2 as _psycopg2
+        conn = _psycopg2.connect(settings.database_url)
+        try:
+            reserved = _reserve(conn, True)
+            conn.commit()
+            return reserved
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        return _reserve(conn, False)
+
+
+def refund_quota(user_id: int) -> None:
+    """Return a previously reserved free watch after a failed delivery."""
+    if is_user_premium(user_id):
+        return
     ph = "%s" if _using_pg else "?"
     _execute(
-        f"UPDATE user_settings SET quota_used = quota_used + 1, quota_date = {ph} WHERE user_id = {ph}",
-        (today, user_id)
+        f"UPDATE user_settings SET quota_used = CASE WHEN quota_used > 0 "
+        f"THEN quota_used - 1 ELSE 0 END WHERE user_id = {ph}",
+        (user_id,),
     )
-    return True
 
 
 def grant_premium(user_id: int, days: int | None = None) -> None:
@@ -1222,6 +1341,142 @@ def list_premium_users() -> list[dict]:
         "SELECT user_id, premium_until, first_seen FROM user_settings WHERE is_premium = 1"
     )
     return [dict(r) for r in rows]
+
+def set_pending_referral(referrer_id: int, referred_id: int) -> bool:
+    """Store attribution until the new user receives their first video."""
+    if referrer_id == referred_id or not user_exists(referrer_id):
+        return False
+    ensure_user_exists(referred_id)
+    ph = "%s" if _using_pg else "?"
+    cur = _execute(
+        f"UPDATE user_settings SET pending_referrer_id = {ph} "
+        f"WHERE user_id = {ph} AND referred_by IS NULL "
+        f"AND pending_referrer_id IS NULL "
+        f"AND NOT EXISTS (SELECT 1 FROM referrals WHERE referred_id = {ph})",
+        (referrer_id, referred_id, referred_id),
+    )
+    return cur.rowcount == 1
+
+
+def activate_pending_referral(referred_id: int, bonus: int = 10) -> dict | None:
+    """Atomically activate a pending referral after first successful delivery.
+
+    The referral row, bonus, attribution and each 10-referral Premium milestone
+    commit together.  Concurrent activations serialize on the referrer's user
+    row, so a milestone is awarded exactly once.
+    """
+    if bonus < 1:
+        return None
+
+    def _activate(conn, pg: bool) -> dict | None:
+        cur = conn.cursor()
+        try:
+            lock = " FOR UPDATE" if pg else ""
+            cur.execute(
+                ("SELECT pending_referrer_id FROM user_settings WHERE user_id = %s" if pg else
+                 "SELECT pending_referrer_id FROM user_settings WHERE user_id = ?") + lock,
+                (referred_id,),
+            )
+            row = cur.fetchone()
+            referrer_id = (row[0] if pg else row["pending_referrer_id"]) if row else None
+            if not referrer_id or referrer_id == referred_id:
+                return None
+
+            cur.execute(
+                ("SELECT user_id FROM user_settings WHERE user_id = %s" if pg else
+                 "SELECT user_id FROM user_settings WHERE user_id = ?") + lock,
+                (referrer_id,),
+            )
+            if not cur.fetchone():
+                return None
+
+            if pg:
+                cur.execute(
+                    "INSERT INTO referrals (referrer_id, referred_id, bonus_granted) "
+                    "VALUES (%s, %s, %s) ON CONFLICT (referred_id) DO NOTHING RETURNING id",
+                    (referrer_id, referred_id, bonus),
+                )
+                inserted = cur.fetchone() is not None
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO referrals (referrer_id, referred_id, bonus_granted) VALUES (?, ?, ?)",
+                    (referrer_id, referred_id, bonus),
+                )
+                inserted = cur.rowcount == 1
+            if not inserted:
+                cur.execute(
+                    "UPDATE user_settings SET pending_referrer_id = NULL WHERE user_id = %s" if pg else
+                    "UPDATE user_settings SET pending_referrer_id = NULL WHERE user_id = ?",
+                    (referred_id,),
+                )
+                return None
+
+            cur.execute(
+                "UPDATE user_settings SET quota_limit = quota_limit + %s WHERE user_id = %s" if pg else
+                "UPDATE user_settings SET quota_limit = quota_limit + ? WHERE user_id = ?",
+                (bonus, referrer_id),
+            )
+            cur.execute(
+                "UPDATE user_settings SET referred_by = %s, pending_referrer_id = NULL WHERE user_id = %s" if pg else
+                "UPDATE user_settings SET referred_by = ?, pending_referrer_id = NULL WHERE user_id = ?",
+                (referrer_id, referred_id),
+            )
+            cur.execute(
+                "SELECT COUNT(*) FROM referrals WHERE referrer_id = %s" if pg else
+                "SELECT COUNT(*) FROM referrals WHERE referrer_id = ?",
+                (referrer_id,),
+            )
+            count = int(cur.fetchone()[0])
+            premium_awarded = count % 10 == 0
+            if premium_awarded:
+                if pg:
+                    cur.execute(
+                        "UPDATE user_settings SET is_premium = 1, premium_until = "
+                        "CASE WHEN is_premium = 1 AND premium_until IS NULL THEN NULL "
+                        "WHEN is_premium = 1 AND premium_until > CURRENT_TIMESTAMP "
+                        "THEN premium_until + INTERVAL '30 days' "
+                        "ELSE CURRENT_TIMESTAMP + INTERVAL '30 days' END WHERE user_id = %s",
+                        (referrer_id,),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE user_settings SET is_premium = 1, premium_until = "
+                        "CASE WHEN is_premium = 1 AND premium_until IS NULL THEN NULL "
+                        "WHEN is_premium = 1 AND premium_until > CURRENT_TIMESTAMP "
+                        "THEN datetime(premium_until, '+30 days') "
+                        "ELSE datetime('now', '+30 days') END WHERE user_id = ?",
+                        (referrer_id,),
+                    )
+            return {
+                "referrer_id": int(referrer_id),
+                "referred_id": referred_id,
+                "bonus": bonus,
+                "count": count,
+                "premium_awarded": premium_awarded,
+            }
+        finally:
+            cur.close()
+
+    if _using_pg:
+        import psycopg2 as _psycopg2
+        conn = _psycopg2.connect(settings.database_url)
+        try:
+            result = _activate(conn, True)
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            return None
+        finally:
+            conn.close()
+
+    try:
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            return _activate(conn, False)
+    except Exception:
+        return None
+
 
 def record_referral(referrer_id: int, referred_id: int, bonus: int = 5) -> bool:
     """Credit one real, first-time referral; self and unknown referrers are rejected."""
@@ -1348,7 +1603,8 @@ def update_import_job(job_id: int, **fields) -> None:
 
 
 def latest_import_job() -> Optional[dict]:
-    return _fetchone("SELECT * FROM import_jobs ORDER BY id DESC LIMIT 1")
+    row = _fetchone("SELECT * FROM import_jobs ORDER BY id DESC LIMIT 1")
+    return dict(row) if row else None
 
 
 # ── Multi-part video helpers ─────────────────────────────────────────────

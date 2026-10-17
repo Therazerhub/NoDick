@@ -172,3 +172,46 @@ def test_autoposter_aborts_instead_of_sending_gray_placeholder(monkeypatch):
             raise AssertionError("gray placeholder must never be sent")
 
     assert asyncio.run(poster.send_auto_post(FakeBot(), force=True)) == 0
+
+
+def test_stash_image_fetch_runs_off_event_loop(monkeypatch):
+    import time
+
+    def slow_fetch(_scene_id):
+        time.sleep(0.08)
+        return b"image"
+
+    monkeypatch.setattr(poster, "fetch_scene_image", slow_fetch)
+
+    async def exercise():
+        task = asyncio.create_task(
+            poster._fetch_teaser_source({"stashdb_scene_id": "scene-1"})
+        )
+        await asyncio.sleep(0.01)
+        responsive = not task.done()
+        result = await task
+        return responsive, result
+
+    responsive, result = asyncio.run(exercise())
+    assert responsive is True
+    assert result == (b"image", "stashdb")
+
+
+def test_autoposter_selection_uses_one_exclusion_query(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        poster,
+        "get_bot_setting",
+        lambda key, default="": "[1, 2, 3]" if key == "auto_post_posted_ids" else default,
+    )
+
+    def fake_fetch(sql, params=None):
+        calls.append((sql, params))
+        return {"id": 4, "title": "fresh"}
+
+    monkeypatch.setattr(poster, "_fetchone", fake_fetch)
+    picked = poster._select_video()
+    assert picked["id"] == 4
+    assert len(calls) == 1
+    assert "NOT IN" in calls[0][0]
+    assert calls[0][1] == (1, 2, 3)

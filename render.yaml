@@ -8,19 +8,19 @@ services:
     dockerfilePath: ./Dockerfile
     envVars:
       - key: BOT_TOKEN
-        value: 8206593405:AAHC77fwS8mpr1oBDOLMfLjVipzRtOYb8gg
+        sync: false
       - key: ADMIN_ID
         value: "6001922744"
       - key: TELEGRAM_API_ID
-        value: "20227614"
+        sync: false
       - key: TELEGRAM_API_HASH
-        value: b9268f7d01884a3d740ba17d0ad8754b
+        sync: false
       - key: DB_PATH
         value: /data/nodick.db
       - key: TELEGRAM_USER_SESSION
         value: /data/nodick_user
       - key: STASHDB_API_KEY
-        value: eyJhbG...R7CA
+        sync: false
       # PostgreSQL connection string — set in Render dashboard, not here (secret).
       - key: DATABASE_URL
         sync: false

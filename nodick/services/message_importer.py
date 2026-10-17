@@ -71,12 +71,29 @@ async def _batch_fetch(
     channel_id: int,
     ids: list[int],
 ) -> list:
-    """Fetch a batch of message IDs. Non-existent IDs are simply omitted."""
-    try:
-        return await client.get_messages(channel_id, ids=ids)
-    except Exception as e:
-        log.warning("Batch fetch error for ids %d-%d: %s", ids[0], ids[-1], e)
-        return []
+    """Fetch a batch with bounded retries; never mislabel outages as skips."""
+    for attempt in range(3):
+        try:
+            return await client.get_messages(channel_id, ids=ids)
+        except Exception as exc:
+            if attempt == 2:
+                log.error(
+                    "Batch fetch failed for ids %d-%d after 3 attempts: %s",
+                    ids[0], ids[-1], exc,
+                )
+                raise
+            flood_wait = getattr(exc, "seconds", None)
+            delay = (
+                float(flood_wait) + 1.0
+                if flood_wait is not None
+                else 1.0 * (attempt + 1)
+            )
+            log.warning(
+                "Batch fetch error for ids %d-%d; retrying in %.0fs: %s",
+                ids[0], ids[-1], delay, exc,
+            )
+            await asyncio.sleep(delay)
+    return []
 
 
 class MessageIDImporter:
@@ -123,6 +140,7 @@ class MessageIDImporter:
             "videos_found": 0,
             "saved": 0,
             "skipped": 0,
+            "next_message_id": start_message_id,
         }
 
         if job_id:
@@ -162,6 +180,7 @@ class MessageIDImporter:
                     stats["saved"] += batch_count
                     self._last_copied_id = batch_end
                     current_id = batch_end - 1
+                    stats["next_message_id"] = current_id
                     if progress and stats["total_checked"] % 500 == 0:
                         await progress(stats)
                     continue
@@ -220,6 +239,8 @@ class MessageIDImporter:
 
                 # Save checkpoint
                 self._last_copied_id = batch_end
+                current_id = batch_end - 1
+                stats["next_message_id"] = current_id
 
                 if job_id and stats["total_checked"] % 500 == 0:
                     update_import_job(job_id, **stats)
@@ -228,7 +249,6 @@ class MessageIDImporter:
                     await progress(stats)
 
                 # Rate limiting — 2 batches/sec to be gentle
-                current_id = batch_end - 1
                 await asyncio.sleep(0.5)
 
             stats["status"] = "done" if self._running else "paused"

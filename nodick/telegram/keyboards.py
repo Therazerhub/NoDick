@@ -16,15 +16,15 @@ def _action_buttons_enabled() -> bool:
 
 def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("🎲 Surprise Me", callback_data="random")],
         [
+            InlineKeyboardButton("🎲 Surprise Me", callback_data="random"),
             InlineKeyboardButton("🔍 Search", callback_data="search_menu"),
-            InlineKeyboardButton("📁 Categories", callback_data="categories"),
         ],
         [
-            InlineKeyboardButton("⭐ Favorites", callback_data="favorites"),
-            InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer"),
-        ]
+            InlineKeyboardButton("📁 Categories", callback_data="categories"),
+            InlineKeyboardButton("⭐ Saved", callback_data="favorites"),
+        ],
+        [InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer")],
     ]
     
     # Account/Premium menu for ALL users
@@ -61,10 +61,10 @@ def back() -> InlineKeyboardMarkup:
 
 
 def account_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("📊 My Stats", callback_data="my_stats")],
-        [InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer")],
-    ]
+    rows = [[
+        InlineKeyboardButton("📊 My Stats", callback_data="my_stats"),
+        InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer"),
+    ]]
     if not is_user_premium(user_id):
         rows.append([InlineKeyboardButton("👑 Get Premium", callback_data="get_premium")])
     rows.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
@@ -105,7 +105,7 @@ def video_actions(
     rows = [
         [
             InlineKeyboardButton(more_text, callback_data="random"),
-            InlineKeyboardButton("💦 Save", callback_data=f"fav_{video_id}"),
+            InlineKeyboardButton("♡ Save", callback_data=f"fav_{video_id}"),
         ]
     ]
     if bot_username and user_id is not None:
@@ -220,9 +220,6 @@ def settings_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("🛡️ Grant Admin", callback_data="prompt_grantadmin"),
             InlineKeyboardButton("❌ Revoke Admin", callback_data="prompt_revokeadmin")
-        ],
-        [
-            InlineKeyboardButton("📢 Broadcast", callback_data="prompt_broadcast")
         ],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
     ])

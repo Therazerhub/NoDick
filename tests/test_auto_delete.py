@@ -144,7 +144,11 @@ def test_enrich_send_adds_notice_and_schedules_same_30_minute_timer(monkeypatch)
 
     monkeypatch.setattr(app, "get_video", lambda _video_id: row)
     monkeypatch.setattr(app, "find_sibling_parts", lambda *_args: [])
-    monkeypatch.setattr(app, "increment_view", lambda _video_id: None)
+
+    def fail_view_bookkeeping(_video_id):
+        raise RuntimeError("database temporarily unavailable")
+
+    monkeypatch.setattr(app, "increment_view", fail_view_bookkeeping)
     monkeypatch.setattr(
         app,
         "bump_streak",
