@@ -3201,10 +3201,9 @@ def run() -> None:
         # Build the application (initializes the DB) BEFORE marking HTTP
         # health ready, so Render traffic never hits an uninitialized app.
         application = build_application()
-        # One threaded server keeps Render health checks unchanged and serves
-        # the authenticated Mini App/static API from this same process.
+        # Render health endpoint only — the bot is pure Telegram again.
         server = start_web_server(_port)
-        log.info("Health and Mini App server on port %d", _port)
+        log.info("Health server on port %d", _port)
 
         print("🖤 NoDick starting...")
         print(f"   Bot: @{settings.bot_token.split(':')[0]}")
@@ -3223,6 +3222,6 @@ def run() -> None:
             try:
                 server.shutdown()
                 server.server_close()
-                log.info("Health and Mini App server shut down")
+                log.info("Health server shut down")
             except Exception:
                 log.exception("Web server shutdown failed")

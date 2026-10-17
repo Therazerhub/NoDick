@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
 from nodick.db import get_bot_setting, get_user_size_limit, is_user_premium, get_user_quota
@@ -15,17 +15,7 @@ def _action_buttons_enabled() -> bool:
 
 
 def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
-    rows = []
-    if settings.mini_app_url:
-        base = settings.mini_app_url.rstrip("/")
-        if base.endswith("/app"):
-            base = base[: -len("/app")]
-        rows.append([
-            InlineKeyboardButton(
-                "🌐 Community", web_app=WebAppInfo(url=f"{base}/app/community/")
-            )
-        ])
-    rows += [
+    rows = [
         [
             InlineKeyboardButton("🎲 Surprise Me", callback_data="random"),
             InlineKeyboardButton("🔍 Search", callback_data="search_menu"),
@@ -56,7 +46,7 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
 
     if user_id == settings.admin_id or is_extra:
         # Add stats next to favorites for admin
-        growth_row = 3 if settings.mini_app_url else 2
+        growth_row = 2
         rows[growth_row].append(InlineKeyboardButton("📊 Bot Stats", callback_data="stats"))
         rows.append(
             [

@@ -13,9 +13,7 @@ services:
         value: "6001922744"
       - key: BOT_USERNAME
         value: Moyechan_bot
-      # Set to the service's public HTTPS URL ending in /app/.
-      - key: MINI_APP_URL
-        sync: false
+
       - key: TELEGRAM_API_ID
         sync: false
       - key: TELEGRAM_API_HASH

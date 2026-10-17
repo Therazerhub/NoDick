@@ -252,19 +252,11 @@ BOT_TOKEN=your_bot_token
 ADMIN_ID=your_telegram_user_id
 DB_PATH=runtime/nodick.db
 BOT_USERNAME=your_bot_username
-MINI_APP_URL=https://your-public-host.example/app/
 ```
 
 For a production database, set `DATABASE_URL` to a PostgreSQL connection string in your deployment dashboard. **Never commit tokens, database credentials or `.env` files.**
 
-`MINI_APP_URL` is optional. When it is blank, no Web App button is shown. In production it must be the public HTTPS `/app/` URL for this same service. Add that URL in BotFather's allowed Web App domain configuration. The existing `/` health response remains `NoDick is alive`.
-
-### Mini App security model
-
-- Every `/api/*` request requires fresh Telegram `initData`; the server validates its `WebAppData` HMAC with `BOT_TOKEN`, checks `auth_date`, and derives the user ID only from the signed payload.
-- Dashboard and saved-item queries are scoped to that authenticated Telegram user. Clients cannot request another user ID.
-- Catalog responses expose only text metadata, save state and `t.me` deep links. Telegram file IDs, source chat IDs, thumbnails and media never enter the web app.
-- Video delivery still happens in the bot, so force-join, quota reservation, exact deep-link delivery and post-send accounting stay on the existing path.
+No public web interface is required. The process only serves a `/` health endpoint (`NoDick is alive`) for Render's health checks; all user interaction happens inside Telegram.
 
 <details>
 <summary><strong>Optional integrations</strong></summary>

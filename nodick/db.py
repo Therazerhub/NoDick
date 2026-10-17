@@ -138,10 +138,6 @@ def init_db() -> None:
         _init_pg()
     else:
         _init_sqlite()
-    # Community tables are additive and deliberately isolated from the legacy
-    # video schema while retaining SQLite/PostgreSQL parity.
-    from nodick.community import init_community_db
-    init_community_db()
 
 
 def _init_pg():
