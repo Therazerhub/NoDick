@@ -149,7 +149,7 @@ print(json.dumps({"pending": "pending_referrer_id" in columns, "category_index":
     assert result == {"pending": True, "category_index": True}
 
 
-def test_random_video_uses_indexed_id_sampling_and_size_filter(tmp_path):
+def test_random_video_is_unbiased_across_sparse_ids_and_keeps_size_filter(tmp_path):
     result = _run_db_script(
         tmp_path,
         """
@@ -158,14 +158,23 @@ import random
 from nodick import db
 
 db.init_db()
-db.upsert_video(file_id='large', title='large', file_size=900 * 1024 * 1024)
-db.upsert_video(file_id='small', title='small', file_size=10 * 1024 * 1024)
-random.randint = lambda low, high: low
-row = db.random_video(max_size_mb=100)
-print(json.dumps({"file_id": row["file_id"], "title": row["title"]}))
+with db.connect() as conn:
+    conn.executemany(
+        'INSERT INTO videos(id, file_id, title, file_size) VALUES (?, ?, ?, ?)',
+        [
+            (1, 'small-a', 'small a', 10 * 1024 * 1024),
+            (5000, 'large', 'large', 900 * 1024 * 1024),
+            (10000, 'small-b', 'small b', 10 * 1024 * 1024),
+            (10001, 'small-c', 'small c', 10 * 1024 * 1024),
+        ],
+    )
+offsets = iter([0, 1, 2])
+random.randrange = lambda count: next(offsets)
+rows = [db.random_video(max_size_mb=100) for _ in range(3)]
+print(json.dumps([row['file_id'] for row in rows]))
 """,
     )
-    assert result == {"file_id": "small", "title": "small"}
+    assert result == ["small-a", "small-b", "small-c"]
 
 
 def test_failed_delivery_refunds_reserved_quota(monkeypatch):

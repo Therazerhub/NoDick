@@ -562,27 +562,29 @@ def get_video(video_id: int) -> Optional[dict]:
 
 
 def random_video(max_size_mb: Optional[int] = None) -> Optional[dict]:
-    """Indexed random pick without a full-table ``ORDER BY RANDOM()`` sort."""
+    """Return an unbiased random eligible row without sorting the whole table.
+
+    Sampling a numeric ID between ``MIN(id)`` and ``MAX(id)`` heavily favors
+    rows after large ID gaps, which can make Surprise Me appear stuck on one
+    video after imports/deletions. A random ordered offset is uniform across
+    the actual eligible rows and still avoids ``ORDER BY RANDOM()``.
+    """
     import random
 
     size_chunk, size_params = _size_filter(max_size_mb)
-    bounds = _fetchone(
-        f"SELECT MIN(id) AS min_id, MAX(id) AS max_id FROM videos WHERE 1=1{size_chunk}",
+    count_row = _fetchone(
+        f"SELECT COUNT(*) AS cnt FROM videos WHERE 1=1{size_chunk}",
         size_params,
     )
-    if not bounds or bounds["min_id"] is None or bounds["max_id"] is None:
+    count = int(count_row["cnt"]) if count_row else 0
+    if count <= 0:
         return None
-    target = random.randint(int(bounds["min_id"]), int(bounds["max_id"]))
+    offset = random.randrange(count)
     ph = "%s" if _using_pg else "?"
-    row = _fetchone(
-        f"SELECT * FROM videos WHERE id >= {ph}{size_chunk} ORDER BY id LIMIT 1",
-        (target,) + size_params,
-    )
-    if row:
-        return row
     return _fetchone(
-        f"SELECT * FROM videos WHERE id < {ph}{size_chunk} ORDER BY id LIMIT 1",
-        (target,) + size_params,
+        f"SELECT * FROM videos WHERE 1=1{size_chunk} "
+        f"ORDER BY id LIMIT 1 OFFSET {ph}",
+        size_params + (offset,),
     )
 
 
