@@ -160,12 +160,14 @@ from nodick import db
 db.init_db()
 with db.connect() as conn:
     conn.executemany(
-        'INSERT INTO videos(id, file_id, title, file_size) VALUES (?, ?, ?, ?)',
+        'INSERT INTO videos(id, file_id, title, file_size, duration) VALUES (?, ?, ?, ?, ?)',
         [
-            (1, 'small-a', 'small a', 10 * 1024 * 1024),
-            (5000, 'large', 'large', 900 * 1024 * 1024),
-            (10000, 'small-b', 'small b', 10 * 1024 * 1024),
-            (10001, 'small-c', 'small c', 10 * 1024 * 1024),
+            (1, 'small-a', 'small a', 10 * 1024 * 1024, 120),
+            (5000, 'large', 'large', 900 * 1024 * 1024, 120),
+            (7000, 'short', 'short clip', 10 * 1024 * 1024, 3),
+            (8000, 'gif', 'reaction.gif', 10 * 1024 * 1024, 120),
+            (10000, 'small-b', 'small b', 10 * 1024 * 1024, 120),
+            (10001, 'small-c', 'small c', 10 * 1024 * 1024, 120),
         ],
     )
 offsets = iter([0, 1, 2])

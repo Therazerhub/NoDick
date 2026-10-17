@@ -1,10 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
-from nodick.services import message_importer
+from nodick.services import importer, message_importer
+
+
+def test_importers_reject_gif_style_animated_mp4_documents():
+    animated = type("DocumentAttributeAnimated", (), {})()
+    video_doc = SimpleNamespace(mime_type="video/mp4", attributes=[animated])
+    message = SimpleNamespace(media=object(), video=video_doc, document=video_doc)
+
+    assert message_importer._is_video(message) is False
+    assert importer._video_doc(message) is None
+
+
+def test_importers_accept_regular_video_documents():
+    video_doc = SimpleNamespace(mime_type="video/mp4", attributes=[])
+    message = SimpleNamespace(media=object(), video=video_doc, document=video_doc)
+
+    assert message_importer._is_video(message) is True
+    assert importer._video_doc(message) is video_doc
 
 
 def test_batch_fetch_retries_transient_errors(monkeypatch):

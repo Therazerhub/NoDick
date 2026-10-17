@@ -561,30 +561,40 @@ def get_video(video_id: int) -> Optional[dict]:
     return _fetchone("SELECT * FROM videos WHERE id = %s" if _using_pg else "SELECT * FROM videos WHERE id = ?", (video_id,))
 
 
-def random_video(max_size_mb: Optional[int] = None) -> Optional[dict]:
+def random_video(
+    max_size_mb: Optional[int] = None,
+    min_duration_seconds: int = 15,
+) -> Optional[dict]:
     """Return an unbiased random eligible row without sorting the whole table.
 
     Sampling a numeric ID between ``MIN(id)`` and ``MAX(id)`` heavily favors
     rows after large ID gaps, which can make Surprise Me appear stuck on one
     video after imports/deletions. A random ordered offset is uniform across
-    the actual eligible rows and still avoids ``ORDER BY RANDOM()``.
+    the actual eligible rows and still avoids ``ORDER BY RANDOM()``. Known
+    clips shorter than ``min_duration_seconds`` and GIF filenames are omitted;
+    legacy rows with unknown duration remain eligible.
     """
     import random
 
     size_chunk, size_params = _size_filter(max_size_mb)
+    ph = "%s" if _using_pg else "?"
+    eligibility = (
+        f"{size_chunk} AND (duration IS NULL OR duration = 0 OR duration >= {ph}) "
+        "AND LOWER(COALESCE(title, '')) NOT LIKE '%.gif'"
+    )
+    eligible_params = size_params + (max(1, int(min_duration_seconds)),)
     count_row = _fetchone(
-        f"SELECT COUNT(*) AS cnt FROM videos WHERE 1=1{size_chunk}",
-        size_params,
+        f"SELECT COUNT(*) AS cnt FROM videos WHERE 1=1{eligibility}",
+        eligible_params,
     )
     count = int(count_row["cnt"]) if count_row else 0
     if count <= 0:
         return None
     offset = random.randrange(count)
-    ph = "%s" if _using_pg else "?"
     return _fetchone(
-        f"SELECT * FROM videos WHERE 1=1{size_chunk} "
+        f"SELECT * FROM videos WHERE 1=1{eligibility} "
         f"ORDER BY id LIMIT 1 OFFSET {ph}",
-        size_params + (offset,),
+        eligible_params + (offset,),
     )
 
 

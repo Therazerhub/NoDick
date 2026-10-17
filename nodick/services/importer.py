@@ -16,11 +16,24 @@ from nodick.utils import extract_category_from_title, title_from_filename_or_cap
 ProgressCallback = Callable[[dict], Awaitable[None]]
 
 
+def _is_animated_document(doc) -> bool:
+    """Telegram GIF-style MP4s carry DocumentAttributeAnimated."""
+    return any(
+        attr.__class__.__name__ == "DocumentAttributeAnimated"
+        for attr in (getattr(doc, "attributes", None) or [])
+    )
+
+
 def _video_doc(message):
     if getattr(message, "video", None):
-        return message.video
+        doc = message.video
+        return None if _is_animated_document(doc) else doc
     doc = getattr(message, "document", None)
-    if doc and getattr(doc, "mime_type", "").startswith("video/"):
+    if (
+        doc
+        and getattr(doc, "mime_type", "").startswith("video/")
+        and not _is_animated_document(doc)
+    ):
         return doc
     return None
 

@@ -54,15 +54,23 @@ async def _get_telethon_client() -> TelegramClient:
         return client
 
 
+def _is_animated_document(doc) -> bool:
+    """Telegram GIF-style MP4s carry DocumentAttributeAnimated."""
+    return any(
+        attr.__class__.__name__ == "DocumentAttributeAnimated"
+        for attr in (getattr(doc, "attributes", None) or [])
+    )
+
+
 def _is_video(msg) -> bool:
-    """Check if a Telethon message contains a video."""
+    """Check if a Telethon message contains a real video, not a GIF animation."""
     if not msg or not msg.media:
         return False
     if hasattr(msg, "video") and msg.video:
-        return True
+        return not _is_animated_document(msg.video)
     if hasattr(msg, "document") and msg.document:
         mime = getattr(msg.document, "mime_type", "") or ""
-        return mime.startswith("video/")
+        return mime.startswith("video/") and not _is_animated_document(msg.document)
     return False
 
 
