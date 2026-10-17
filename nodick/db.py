@@ -607,9 +607,12 @@ def random_video(
     ph = "%s" if _using_pg else "?"
     eligibility = (
         f"{size_chunk} AND (duration IS NULL OR duration = 0 OR duration >= {ph}) "
-        "AND LOWER(COALESCE(title, '')) NOT LIKE '%.gif'"
+        f"AND LOWER(COALESCE(title, '')) NOT LIKE {ph}"
     )
-    eligible_params = size_params + (max(1, int(min_duration_seconds)),)
+    # Keep the LIKE pattern parameterized. A literal ``'%.gif'`` works with
+    # SQLite, but psycopg2 interprets its percent sign as placeholder syntax
+    # when the same query also contains ``%s`` parameters.
+    eligible_params = size_params + (max(1, int(min_duration_seconds)), "%.gif")
     count_row = _fetchone(
         f"SELECT COUNT(*) AS cnt FROM videos WHERE 1=1{eligibility}",
         eligible_params,

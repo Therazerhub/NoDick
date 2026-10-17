@@ -245,6 +245,15 @@ print(json.dumps([row['file_id'] for row in rows]))
     assert result == ["small-a", "small-b", "small-c"]
 
 
+def test_random_video_parameterizes_gif_pattern_for_postgres_compatibility():
+    """A literal percent in a parameterized psycopg2 query breaks execution."""
+    source = (ROOT / "nodick" / "db.py").read_text()
+    random_fn = source[source.index("def random_video("):source.index("\ndef increment_view", source.index("def random_video("))]
+    assert "NOT LIKE {ph}" in random_fn
+    assert 'min_duration_seconds)), "%.gif")' in random_fn
+    assert "NOT LIKE '%.gif'" not in random_fn
+
+
 def test_failed_delivery_refunds_reserved_quota(monkeypatch):
     refunds = []
     monkeypatch.setattr(app, "_is_admin", lambda _update: False)
