@@ -82,6 +82,7 @@ def test_mini_app_routes_and_authorization_boundary(monkeypatch):
         assert (status, body) == (200, b"NoDick is alive")
         status, headers, body = _request(server, "/app/")
         assert status == 200 and b"PRIVATE LIBRARY" in body
+        assert b"community-link" in body
         assert "Content-Security-Policy" in headers
         assert "X-Frame-Options" not in headers
         assert "https://web.telegram.org" in headers["Content-Security-Policy"]
@@ -132,11 +133,29 @@ def test_api_failure_returns_json_instead_of_hanging(monkeypatch):
 
 
 def test_web_client_has_timeout_and_non_blocking_secondary_boot():
-    source = (web.ASSET_ROOT / "app.js").read_text()
+    source = (web.ASSET_ROOT / "community" / "app.js").read_text()
     assert "AbortController" in source
     assert "TIMEOUT=12000" in source
-    assert "Promise.allSettled" in source
+    assert "/api/community/me" in source
+    assert "/api/community/posts" in source
     assert "replaceChildren" in source
+
+
+def test_community_surface_is_served_separately():
+    token = "123:test-token"
+    server = ThreadingHTTPServer(("127.0.0.1", 0), web.make_handler(bot_token=token, bot_username="TestBot"))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _, body = _request(server, "/app/community/")
+        assert status == 200 and b"NODICK COMMUNITY" in body
+        status, headers, body = _request(server, "/app/community/assets/app.js")
+        assert status == 200 and headers["Cache-Control"] == "no-store"
+        assert _request(server, "/app/assets/app.js")[0] == 200
+        assert _request(server, "/app/community/assets/evil.js")[0] == 404
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_postgres_helpers_use_bounded_pool_and_query_deadlines():
@@ -179,7 +198,7 @@ def test_webapp_button_only_when_configured(monkeypatch):
     assert all(button.web_app is None for row in without.inline_keyboard for button in row)
     monkeypatch.setattr(keyboards, "settings", SimpleNamespace(mini_app_url="https://example.test/app/", admin_id=999))
     with_app = keyboards.main_menu(1)
-    assert with_app.inline_keyboard[0][0].web_app.url == "https://example.test/app/"
+    assert with_app.inline_keyboard[0][0].web_app.url == "https://example.test/app/community/"
 
 
 def test_placeholder_caption_uses_metadata_and_omits_unknown_duration():

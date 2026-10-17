@@ -17,9 +17,12 @@ def _action_buttons_enabled() -> bool:
 def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
     rows = []
     if settings.mini_app_url:
+        base = settings.mini_app_url.rstrip("/")
+        if base.endswith("/app"):
+            base = base[: -len("/app")]
         rows.append([
             InlineKeyboardButton(
-                "◼ Open Library", web_app=WebAppInfo(url=settings.mini_app_url)
+                "🌐 Community", web_app=WebAppInfo(url=f"{base}/app/community/")
             )
         ])
     rows += [
