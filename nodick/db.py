@@ -21,38 +21,73 @@ _using_pg = bool(settings.database_url)
 if _using_pg:
     import psycopg2
     from psycopg2.extras import RealDictCursor
+    from psycopg2.pool import ThreadedConnectionPool
 
-    _pg_conn = None
+    _pg_pool = None
+    _pg_pool_lock = __import__("threading").Lock()
+    _PG_CONNECT_KWARGS = {
+        "connect_timeout": 5,
+        "options": "-c statement_timeout=8000 -c lock_timeout=3000",
+    }
 
-    def _get_pg():
-        global _pg_conn
-        if _pg_conn is None or _pg_conn.closed:
-            _pg_conn = psycopg2.connect(settings.database_url)
-            _pg_conn.autocommit = True
-        return _pg_conn
+    def _new_pg_connection():
+        return psycopg2.connect(settings.database_url, **_PG_CONNECT_KWARGS)
+
+    def _get_pg_pool():
+        global _pg_pool
+        if _pg_pool is None:
+            with _pg_pool_lock:
+                if _pg_pool is None:
+                    _pg_pool = ThreadedConnectionPool(
+                        1,
+                        12,
+                        settings.database_url,
+                        **_PG_CONNECT_KWARGS,
+                    )
+        return _pg_pool
 
     @contextmanager
     def connect():
-        """Context manager yielding the global PG connection (compat with SQLite API)."""
-        yield _get_pg()
+        """Yield one bounded, thread-safe PostgreSQL connection."""
+        pool = _get_pg_pool()
+        conn = pool.getconn()
+        conn.autocommit = True
+        try:
+            yield conn
+        except Exception:
+            pool.putconn(conn, close=True)
+            raise
+        else:
+            pool.putconn(conn)
 
     def _fetchall(sql, params=None):
-        conn = _get_pg()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql, params)
-            return cur.fetchall() or []
+        with connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(sql, params)
+                return cur.fetchall() or []
 
     def _fetchone(sql, params=None):
-        conn = _get_pg()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql, params)
-            return cur.fetchone()
+        with connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(sql, params)
+                return cur.fetchone()
 
     def _execute(sql, params=None):
-        conn = _get_pg()
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            return cur
+        with connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rowcount = cur.rowcount
+                returned = cur.fetchone() if cur.description else None
+        return _PgResult(rowcount, returned)
+
+    class _PgResult:
+        def __init__(self, rowcount: int, returned):
+            self.rowcount = rowcount
+            self._returned = returned
+            self.description = returned is not None
+
+        def fetchone(self):
+            return self._returned
 
     def _lastrowid(cur) -> int:
         return cur.fetchone()[0] if cur.description else 0
@@ -106,8 +141,7 @@ def init_db() -> None:
 
 
 def _init_pg():
-    conn = _get_pg()
-    with conn.cursor() as cur:
+    with connect() as conn, conn.cursor() as cur:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS videos (
                 id SERIAL PRIMARY KEY,
@@ -524,8 +558,7 @@ def bulk_update_video_sizes(pairs: list[tuple[int, int]]) -> None:
     if _using_pg:
         from psycopg2.extras import execute_values
 
-        conn = _get_pg()
-        with conn.cursor() as cur:
+        with connect() as conn, conn.cursor() as cur:
             execute_values(
                 cur,
                 """UPDATE videos SET file_size = v.size
@@ -1315,8 +1348,7 @@ def get_user_quota(user_id: int) -> dict:
             cur.close()
 
     if _using_pg:
-        import psycopg2 as _psycopg2
-        conn = _psycopg2.connect(settings.database_url)
+        conn = _new_pg_connection()
         try:
             quota = _snapshot(conn, True)
             conn.commit()
@@ -1374,8 +1406,7 @@ def increment_quota(user_id: int) -> bool:
             cur.close()
 
     if _using_pg:
-        import psycopg2 as _psycopg2
-        conn = _psycopg2.connect(settings.database_url)
+        conn = _new_pg_connection()
         try:
             reserved = _reserve(conn, True)
             conn.commit()
@@ -1552,8 +1583,7 @@ def activate_pending_referral(referred_id: int, bonus: int = 10) -> dict | None:
             cur.close()
 
     if _using_pg:
-        import psycopg2 as _psycopg2
-        conn = _psycopg2.connect(settings.database_url)
+        conn = _new_pg_connection()
         try:
             result = _activate(conn, True)
             conn.commit()

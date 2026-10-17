@@ -98,7 +98,13 @@ def make_handler(*, bot_token: str | None = None, bot_username: str | None = Non
         def _headers(self, status: int, content_type: str, length: int = 0) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-store" if content_type.startswith("application/json") else "public, max-age=300")
+            # Mini App assets change with the backend contract. Revalidate on
+            # every open so Telegram's WebView cannot pin a broken JS rollout.
+            self.send_header(
+                "Cache-Control",
+                "no-store" if content_type.startswith(("application/json", "text/html", "application/javascript"))
+                else "public, max-age=300",
+            )
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             # Telegram Desktop/Web may embed Mini Apps cross-origin. Use the
@@ -230,6 +236,10 @@ def make_handler(*, bot_token: str | None = None, bot_username: str | None = Non
                 self._json(404, {"error": "not found"})
                 return
             content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            # mimetypes reports text/javascript on some hosts and
+            # application/javascript on others; normalize for cache policy.
+            if name == "app.js":
+                content_type = "application/javascript"
             self._send(200, body, f"{content_type}; charset=utf-8")
 
         def log_message(self, format: str, *args) -> None:

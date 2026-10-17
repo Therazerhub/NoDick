@@ -139,6 +139,28 @@ def test_web_client_has_timeout_and_non_blocking_secondary_boot():
     assert "replaceChildren" in source
 
 
+def test_postgres_helpers_use_bounded_pool_and_query_deadlines():
+    source = inspect.getsource(db)
+    assert "ThreadedConnectionPool" in source
+    assert "connect_timeout" in source
+    assert "statement_timeout=8000" in source
+    assert "lock_timeout=3000" in source
+    assert "_pg_conn = None" not in source
+
+
+def test_mini_app_html_and_javascript_are_not_cached(monkeypatch):
+    token = "123:test-token"
+    server = ThreadingHTTPServer(("127.0.0.1", 0), web.make_handler(bot_token=token, bot_username="TestBot"))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert _request(server, "/app/")[1]["Cache-Control"] == "no-store"
+        assert _request(server, "/app/assets/app.js")[1]["Cache-Control"] == "no-store"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_force_join_membership_and_malformed_status(monkeypatch):
     assert app._member_has_access(SimpleNamespace(status="restricted", is_member=True))
     assert not app._member_has_access(SimpleNamespace(status="restricted", is_member=False))

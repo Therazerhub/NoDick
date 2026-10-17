@@ -17,9 +17,10 @@ from telegram import (
     User,
 )
 from telegram.constants import ParseMode
-from telegram.error import RetryAfter
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -1951,6 +1952,99 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Text message router ────────────────────────────────────────────────────
 
 
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel any pending admin/user input state."""
+    for key in (
+        "waiting_for_search", "waiting_for_correction", "waiting_for_setting"
+    ):
+        context.user_data.pop(key, None)
+    await update.message.reply_text(
+        "❌ Action cancelled.", reply_markup=main_menu(update.effective_user.id)
+    )
+
+
+async def _broadcast_worker(context, source_message, user_ids: list[int], admin_chat_id: int):
+    """Copy one Telegram message safely to a snapshot of users."""
+    lock = context.application.bot_data.setdefault("broadcast_lock", asyncio.Lock())
+    if lock.locked():
+        await context.bot.send_message(admin_chat_id, "⚠️ A broadcast is already running.")
+        return
+    async with lock:
+        started = asyncio.get_running_loop().time()
+        sent = failed = retried = 0
+        status = await context.bot.send_message(
+            admin_chat_id, f"📡 Broadcasting to {len(user_ids)} users…"
+        )
+        for index, uid in enumerate(user_ids, 1):
+            delivered = False
+            for attempt in range(3):
+                try:
+                    await context.bot.copy_message(
+                        chat_id=uid,
+                        from_chat_id=source_message.chat_id,
+                        message_id=source_message.message_id,
+                    )
+                    sent += 1
+                    delivered = True
+                    break
+                except RetryAfter as exc:
+                    retried += 1
+                    retry_after = exc.retry_after
+                    delay = retry_after.total_seconds() if hasattr(retry_after, "total_seconds") else float(retry_after or 1)
+                    await asyncio.sleep(min(delay, 30) + 0.25)
+                except (TimedOut, NetworkError):
+                    retried += 1
+                    if attempt < 2:
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                except (Forbidden, BadRequest) as exc:
+                    log.debug("Broadcast rejected for user %s: %s", uid, type(exc).__name__)
+                    break
+                except Exception:
+                    log.exception("Broadcast failed for user %s", uid)
+                    break
+            if not delivered:
+                failed += 1
+            await asyncio.sleep(0.05)
+            if index % 25 == 0:
+                try:
+                    await status.edit_text(f"📡 Broadcasting… {index}/{len(user_ids)}")
+                except Exception:
+                    pass
+        elapsed = int(asyncio.get_running_loop().time() - started)
+        summary = (
+            f"📡 Broadcast complete!\n✅ Sent: {sent}\n❌ Failed: {failed}"
+            f"\n🔄 Retried: {retried}\n⏱ {elapsed}s"
+        )
+        try:
+            await status.edit_text(summary)
+        except Exception:
+            await context.bot.send_message(admin_chat_id, summary)
+        ch_id = get_bot_setting("logs_channel_id", "")
+        if ch_id and str(ch_id) != str(admin_chat_id):
+            try:
+                await context.bot.send_message(int(ch_id), summary)
+            except Exception:
+                log.exception("Could not mirror broadcast summary to logs channel")
+
+
+async def broadcast_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Capture any copyable message while the admin broadcast prompt is active."""
+    if context.user_data.get("waiting_for_setting") != "broadcast":
+        return
+    if not _is_admin(update):
+        raise ApplicationHandlerStop
+    context.user_data.pop("waiting_for_setting", None)
+    user_ids = list(dict.fromkeys(int(uid) for uid in get_all_user_ids()))
+    if not user_ids:
+        await update.message.reply_text("📡 No users to broadcast to yet.")
+        raise ApplicationHandlerStop
+    context.application.create_task(
+        _broadcast_worker(context, update.message, user_ids, update.effective_chat.id)
+    )
+    await update.message.reply_text(f"📡 Broadcast queued for {len(user_ids)} users.")
+    raise ApplicationHandlerStop
+
+
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     text = msg.text or msg.caption or ""
@@ -2060,26 +2154,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     failed += 1
             msg = f"✅ Revoked Premium from {count} users.\n(Failed/Skipped: {failed})"
         elif setting == "broadcast":
-            user_ids = get_all_user_ids()
-            
-            async def _run_bg_broadcast():
-                sent, dropped = 0, 0
-                for uid in user_ids:
-                    try:
-                        await context.bot.send_message(chat_id=uid, text=text, parse_mode=ParseMode.MARKDOWN)
-                        sent += 1
-                    except Exception:
-                        dropped += 1
-                    await asyncio.sleep(0.04) # Flood protection
-                # Log completion to logs channel
-                ch_id = get_bot_setting("logs_channel_id", "")
-                if ch_id:
-                    try:
-                        await context.bot.send_message(chat_id=int(ch_id), text=f"📡 Broadcast Complete!\n✅ Sent: {sent}\n❌ Failed: {dropped}")
-                    except: pass
-            
-            context.application.create_task(_run_bg_broadcast())
-            msg = f"📡 Broadcast queued for {len(user_ids)} users! You'll get a notification in your Logs Channel when it finishes."
+            # Broadcast input is intercepted before this text router so that
+            # copy_message preserves entities and every supported media type.
+            msg = "⚠️ Broadcast state expired. Tap Broadcast and send the message again."
             
         elif setting == "grantadmin":
             ids = text.split()
@@ -2747,26 +2824,19 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update):
         await update.message.reply_text("❌ Admin only.")
         return
-    raw = update.message.text
+    raw = update.message.text or ""
     _, _, payload = raw.partition(" ")
-    if not payload.strip():
-        await update.message.reply_text("Usage: /broadcast <message>")
+    if payload.strip():
+        await update.message.reply_text(
+            "Use ⚙️ Settings → 📢 Broadcast, then send or forward the exact message. "
+            "That preserves formatting and media."
+        )
         return
-    user_ids = get_all_user_ids()
-    sent, failed = 0, 0
-    status_msg = await update.message.reply_text(f"📡 Broadcasting to {len(user_ids)} users...")
-    for uid in user_ids:
-        try:
-            await context.bot.send_message(chat_id=uid, text=payload, parse_mode=ParseMode.MARKDOWN)
-            sent += 1
-        except Exception:
-            failed += 1
-        if (sent + failed) % 25 == 0:
-            try:
-                await status_msg.edit_text(f"📡 Broadcasting... {sent + failed}/{len(user_ids)}")
-            except Exception:
-                pass
-    await status_msg.edit_text(f"📡 Broadcast complete!\n✅ Sent: {sent}\n❌ Failed: {failed}")
+    context.user_data["waiting_for_setting"] = "broadcast"
+    await update.message.reply_text(
+        "📢 Send or forward the message to broadcast. Text, photos, videos, GIFs, "
+        "documents, audio and voice notes are supported. Send /cancel to abort."
+    )
 
 async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -3036,6 +3106,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("setautodelete", setautodelete_command))
     app.add_handler(CommandHandler("autodelete", autodelete_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CommandHandler("mystats", my_stats_callback))
     app.add_handler(CommandHandler("refer", refer_callback))
     app.add_handler(CommandHandler("premium", get_premium_callback))
@@ -3095,6 +3166,9 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(_catchall_callback))
 
     # ── Message handlers ──
+    # Pending broadcasts must claim all copyable messages before forwarded
+    # channel detection or upload indexing consumes them.
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, broadcast_input), group=-1)
     # Forwarded-from-channel detection must come BEFORE video handler
     # so it can offer batch import instead of single index
     app.add_handler(MessageHandler(filters.FORWARDED & filters.ChatType.PRIVATE, handle_forward))
