@@ -101,6 +101,44 @@ def test_mini_app_routes_and_authorization_boundary(monkeypatch):
         server.server_close()
 
 
+def test_dashboard_survives_growth_analytics_failure(monkeypatch):
+    token = "123:test-token"
+    monkeypatch.setattr(web, "record_growth_event", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("analytics down")))
+    monkeypatch.setattr(web, "get_user_dashboard", lambda uid: {"user": uid})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), web.make_handler(bot_token=token, bot_username="TestBot"))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _, body = _request(server, "/api/dashboard", token, user_id=77)
+        assert status == 200 and json.loads(body) == {"user": 77}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_failure_returns_json_instead_of_hanging(monkeypatch):
+    token = "123:test-token"
+    monkeypatch.setattr(web, "get_categories", lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), web.make_handler(bot_token=token, bot_username="TestBot"))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _, body = _request(server, "/api/categories", token, user_id=77)
+        assert status == 500
+        assert "temporarily unavailable" in json.loads(body)["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_web_client_has_timeout_and_non_blocking_secondary_boot():
+    source = (web.ASSET_ROOT / "app.js").read_text()
+    assert "AbortController" in source
+    assert "TIMEOUT=12000" in source
+    assert "Promise.allSettled" in source
+    assert "replaceChildren" in source
+
+
 def test_force_join_membership_and_malformed_status(monkeypatch):
     assert app._member_has_access(SimpleNamespace(status="restricted", is_member=True))
     assert not app._member_has_access(SimpleNamespace(status="restricted", is_member=False))

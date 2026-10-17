@@ -93,6 +93,7 @@ def make_handler(*, bot_token: str | None = None, bot_username: str | None = Non
 
     class MiniAppHandler(BaseHTTPRequestHandler):
         server_version = "NoDickWeb/1"
+        timeout = 20
 
         def _headers(self, status: int, content_type: str, length: int = 0) -> None:
             self.send_response(status)
@@ -132,6 +133,7 @@ def make_handler(*, bot_token: str | None = None, bot_username: str | None = Non
             return (actual.scheme, actual.netloc) == (expected.scheme, expected.netloc)
 
         def do_GET(self) -> None:  # noqa: N802
+            started = time.monotonic()
             parsed = urlparse(self.path)
             path = parsed.path
             if path == "/":
@@ -155,31 +157,42 @@ def make_handler(*, bot_token: str | None = None, bot_username: str | None = Non
                 return
             user_id = auth["user_id"]
             query = parse_qs(parsed.query)
-            if path == "/api/dashboard":
-                record_growth_event("mini_app_open", user_id, source="mini_app")
-                self._json(200, get_user_dashboard(user_id))
-            elif path == "/api/categories":
-                self._json(200, {"categories": [dict(row) for row in get_categories()]})
-            elif path == "/api/catalog":
-                try:
-                    page = max(0, min(10_000, int(query.get("page", ["0"])[0])))
-                except ValueError:
-                    self._json(400, {"error": "invalid page"})
-                    return
-                q = query.get("q", [""])[0][:100]
-                category = query.get("category", [""])[0][:100]
-                rows, total = get_catalog(user_id=user_id, query=q, category=category, page=page)
-                self._json(200, {"items": [_safe_video(dict(row), username) for row in rows], "total": total, "page": page})
-            elif path == "/api/saved":
-                try:
-                    page = max(0, min(10_000, int(query.get("page", ["0"])[0])))
-                except ValueError:
-                    self._json(400, {"error": "invalid page"})
-                    return
-                rows, total = get_favorites(user_id, page=page, per_page=50)
-                self._json(200, {"items": [_safe_video({**dict(row), "saved": True}, username) for row in rows], "total": total, "page": page})
-            else:
-                self._json(404, {"error": "not found"})
+            try:
+                if path == "/api/dashboard":
+                    # Analytics must never prevent the dashboard from opening.
+                    try:
+                        record_growth_event("mini_app_open", user_id, source="mini_app")
+                    except Exception:
+                        log.exception("Mini App growth event failed for user %s", user_id)
+                    self._json(200, get_user_dashboard(user_id))
+                elif path == "/api/categories":
+                    self._json(200, {"categories": [dict(row) for row in get_categories()]})
+                elif path == "/api/catalog":
+                    try:
+                        page = max(0, min(10_000, int(query.get("page", ["0"])[0])))
+                    except ValueError:
+                        self._json(400, {"error": "invalid page"})
+                        return
+                    q = query.get("q", [""])[0][:100]
+                    category = query.get("category", [""])[0][:100]
+                    rows, total = get_catalog(user_id=user_id, query=q, category=category, page=page)
+                    self._json(200, {"items": [_safe_video(dict(row), username) for row in rows], "total": total, "page": page})
+                elif path == "/api/saved":
+                    try:
+                        page = max(0, min(10_000, int(query.get("page", ["0"])[0])))
+                    except ValueError:
+                        self._json(400, {"error": "invalid page"})
+                        return
+                    rows, total = get_favorites(user_id, page=page, per_page=50)
+                    self._json(200, {"items": [_safe_video({**dict(row), "saved": True}, username) for row in rows], "total": total, "page": page})
+                else:
+                    self._json(404, {"error": "not found"})
+            except Exception:
+                log.exception("Mini App API failed: path=%s user=%s", path, user_id)
+                self._json(500, {"error": "Library service is temporarily unavailable. Please retry."})
+            finally:
+                elapsed = time.monotonic() - started
+                log.info("Mini App API: path=%s user=%s elapsed=%.3fs", path, user_id, elapsed)
 
         def do_POST(self) -> None:  # noqa: N802
             self._saved_mutation(True)
@@ -255,7 +268,10 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request_thread(self, request, client_address):
         try:
-            self.timeout = self.REQUEST_TIMEOUT
+            # The timeout belongs to the accepted socket/handler, not the
+            # server object. Without this, stalled clients hold threads forever.
+            conn = request[1] if isinstance(request, tuple) else request
+            conn.settimeout(self.REQUEST_TIMEOUT)
             super().process_request_thread(request, client_address)
         finally:
             self._semaphore.release()
