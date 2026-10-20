@@ -186,6 +186,8 @@ def settings_keyboard() -> InlineKeyboardMarkup:
     
     autodel_enabled = get_bot_setting("auto_delete_enabled", "1") == "1"
     autodel_text = "👻 Auto-Delete: ON" if autodel_enabled else "👻 Auto-Delete: OFF"
+    autopost_enabled = get_bot_setting("auto_post_enabled", "0") == "1"
+    autopost_text = "⚙️ Auto-Post: ON" if autopost_enabled else "⚙️ Auto-Post: OFF"
     
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(action_text, callback_data="toggle_action_buttons")],
@@ -218,11 +220,11 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🚀 Auto-Post Now", callback_data="prompt_autopostnow"),
         ],
         [
-            InlineKeyboardButton("⚙️ Auto-Post Task", callback_data="toggle_autopost"),
+            InlineKeyboardButton(autopost_text, callback_data="toggle_autopost"),
             InlineKeyboardButton("⏰ Post Cooldown", callback_data="prompt_autopost_cooldown")
         ],
         [
-            InlineKeyboardButton("📡 Post Channels", callback_data="prompt_autopost_channels"),
+            InlineKeyboardButton("📡 Auto-Post Status", callback_data="autopost_status"),
             InlineKeyboardButton("📢 Broadcast", callback_data="prompt_broadcast")
         ],
         [

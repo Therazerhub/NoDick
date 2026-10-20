@@ -29,7 +29,7 @@ from telegram.ext import (
 )
 
 from nodick.config import settings
-from nodick.telegram import sponsor
+from nodick.telegram import sponsor, autopost
 from nodick.telegram.welcome import DEFAULT_WELCOME_MEDIA, banner_from_message, decode_banner
 from nodick.db import (
     category_count,
@@ -1022,7 +1022,7 @@ async def _enrich_and_send(
 def _duration(seconds: Optional[int]) -> str:
     return format_duration(seconds)
 
-async def _replace_with_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, markup=None):
+async def _replace_with_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, markup=None, parse_mode: str | None = ParseMode.MARKDOWN):
     """Safely replace the current message with text, deleting it if it is media (GIF/Video)."""
     q = update.callback_query
     msg = q.message
@@ -1032,11 +1032,11 @@ async def _replace_with_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
         except Exception:
             pass
         return await context.bot.send_message(
-            chat_id=msg.chat_id, text=text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+            chat_id=msg.chat_id, text=text, reply_markup=markup, parse_mode=parse_mode
         )
     else:
         return await q.edit_message_text(
-            text=text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+            text=text, reply_markup=markup, parse_mode=parse_mode
         )
 
 
@@ -1625,6 +1625,8 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def toggle_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    if q.data == "toggle_autopost":
+        return await autopost.toggle(update, context)
     await q.answer()
     if not _is_admin(update):
         await q.edit_message_text("❌ Admin only.", reply_markup=back())
@@ -1639,10 +1641,6 @@ async def toggle_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current = get_bot_setting("auto_delete_enabled", "1")
         set_bot_setting("auto_delete_enabled", "0" if current == "1" else "1")
         await q.edit_message_text("⚙️ Settings toggled.", reply_markup=settings_keyboard())
-    elif setting == "autopost":
-        current = get_bot_setting("auto_post_enabled", "0")
-        set_bot_setting("auto_post_enabled", "0" if current == "1" else "1")
-        await q.edit_message_text("⚙️ Auto-Post Task toggled.", reply_markup=settings_keyboard())
 
 
 # ── Quality (max file size) filter ─────────────────────────────────────────
@@ -1651,28 +1649,14 @@ async def toggle_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    if q.data == "prompt_autopostnow":
+        return await autopost.post_now(update, context)
     await q.answer()
     if not _is_admin(update):
         return
         
     action = q.data.replace("prompt_", "")
     
-    if action == "autopostnow":
-        from nodick.services.poster import send_auto_post
-        await q.edit_message_text("🚀 Triggering post to all channels...", reply_markup=back())
-        successes = await send_auto_post(context.bot, force=True)
-        if successes:
-            await context.bot.send_message(
-                update.effective_chat.id,
-                f"✅ Auto-Posted to {successes} channel(s)."
-            )
-        else:
-            await context.bot.send_message(
-                update.effective_chat.id,
-                "❌ Failed or cooldown active. Check bot is admin in all channels."
-            )
-        return
-
     context.user_data["waiting_for_setting"] = action
     
     prompts = {
@@ -3231,18 +3215,8 @@ def build_application() -> Application:
         .build()
     )
 
-    # ── Job Queue ──
-    async def auto_post_job(context: ContextTypes.DEFAULT_TYPE):
-        from nodick.db import get_bot_setting
-        enabled = get_bot_setting("auto_post_enabled", "0")
-        if enabled == "1":
-            from nodick.services.poster import send_auto_post
-            await send_auto_post(context.bot)
-
-    if app.job_queue:
-        app.job_queue.run_repeating(auto_post_job, interval=3600, first=60)
-    else:
-        log.warning("JobQueue not initialized. Auto-post will not run.")
+    # Named, serialized scheduler with admin-visible next-check status.
+    autopost.setup_jobs(app)
 
     # ── Commands ──
     app.add_handler(CommandHandler("start", start))
@@ -3298,6 +3272,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(settings_command, pattern="^settings$"))
     app.add_handler(CallbackQueryHandler(thumbnail_settings, pattern=THUMBNAIL_CALLBACK_PATTERN))
     app.add_handler(CallbackQueryHandler(force_join_health, pattern="^forcejoin_health$"))
+    app.add_handler(CallbackQueryHandler(autopost.show_status, pattern="^autopost_status$"))
     app.add_handler(CallbackQueryHandler(toggle_setting, pattern="^toggle_"))
     app.add_handler(CallbackQueryHandler(prompt_setting, pattern="^prompt_"))
     app.add_handler(CallbackQueryHandler(quality_menu, pattern="^quality$"))

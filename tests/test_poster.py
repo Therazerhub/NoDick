@@ -74,7 +74,8 @@ def test_stash_fetch_chooses_largest_image_and_sets_user_agent(monkeypatch):
     assert "NoDickPoster" in requested["headers"]["User-Agent"]
 
 
-def test_telegram_thumbnail_downloads_largest_preview_from_message(monkeypatch):
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_telegram_thumbnail_downloads_largest_preview_from_message(monkeypatch, wrapped):
     source = _source_jpeg()
     message = SimpleNamespace(media=object())
     calls = {}
@@ -82,7 +83,7 @@ def test_telegram_thumbnail_downloads_largest_preview_from_message(monkeypatch):
     class FakeClient:
         async def get_messages(self, chat_id, *, ids):
             calls.update(chat_id=chat_id, ids=ids)
-            return [message]
+            return [message] if wrapped else message
 
         async def download_media(self, media, *, file, thumb):
             calls.update(media=media, thumb=thumb)

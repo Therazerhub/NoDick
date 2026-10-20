@@ -6,13 +6,14 @@ from urllib.parse import quote
 import json
 import logging
 import random
-from datetime import datetime, timedelta
+import math
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
-from nodick.db import _fetchone, _using_pg, get_bot_setting, get_video
+from nodick.db import _fetchone, _using_pg, get_bot_setting, get_video, set_bot_setting
 from nodick.metadata.stash import query_api
 
 try:
@@ -138,7 +139,10 @@ async def fetch_telegram_thumb(video: dict) -> Optional[bytes]:
         from nodick.services.message_importer import _get_telethon_client
         client = await _get_telethon_client()
         msgs = await client.get_messages(chat_id, ids=int(msg_id))
-        msg = msgs[0] if msgs else None
+        # Telethon returns one Message for a scalar ID, not a list. Keep list
+        # handling for compatible wrappers and callers without rejecting the
+        # native single-message response used in production.
+        msg = (msgs[0] if msgs else None) if isinstance(msgs, (list, tuple)) else msgs
         if not msg or not getattr(msg, "media", None):
             log.warning("poster: source message %s has no media", msg_id)
             return None
@@ -161,25 +165,87 @@ async def fetch_telegram_thumb(video: dict) -> Optional[bytes]:
 
 # ── Channel / cooldown state (bot_settings-backed, both backends) ────────────
 
+POST_RESULT_REASONS = {
+    "cooldown": "Waiting for the cooldown to finish.",
+    "no_channels": "No valid destination channels are configured.",
+    "no_videos": "No eligible videos with StashDB metadata were found. Enrich the library first.",
+    "no_thumbnail": "No usable source or rendered thumbnail was found in the candidate attempts.",
+    "missing_username": "The bot has no username for video links.",
+    "failed": "Sending failed for every destination. Check channel access and bot permissions.",
+    "partial": "Sent to some destinations; other destinations failed. Check channel access and bot permissions.",
+    "sent": "Sent successfully to all selected destinations.",
+    "disabled": "AutoPost is turned off.",
+    "error": "Auto-post could not complete. Check the bot logs.",
+}
+
+
+def _safe_count(value) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def record_post_result(status, reason, successes=0, failed=0, video_id=None) -> None:
+    """Best-effort diagnostics; persist fixed copy, never exception/secret text.
+
+    ``reason`` accepts a reason key above or its fixed user-facing text. Unknown
+    reasons fall back to the status's copy (or a neutral error message).
+    """
+    try:
+        status = status if isinstance(status, str) and status in POST_RESULT_REASONS else "error"
+        fixed_reason = POST_RESULT_REASONS.get(reason) if isinstance(reason, str) else None
+        if fixed_reason is None and isinstance(reason, str) and reason in POST_RESULT_REASONS.values():
+            fixed_reason = reason
+        payload = {
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "status": status,
+            "reason": fixed_reason or POST_RESULT_REASONS[status],
+            "successes": _safe_count(successes),
+            "failed": _safe_count(failed),
+        }
+        if video_id is not None:
+            payload["video_id"] = _safe_count(video_id)
+        set_bot_setting("auto_post_last_result", json.dumps(payload))
+    except Exception:
+        # Do not echo DB errors: they can contain connection credentials.
+        log.warning("poster: could not save auto-post diagnostics")
+
+
+def _channel_id(value) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    value = str(value).strip()
+    if re.fullmatch(r"-?[0-9]+", value) and value.lstrip("-").strip("0"):
+        return value
+    if re.fullmatch(r"@[A-Za-z][A-Za-z0-9_]{4,31}", value):
+        return value
+    return None
+
+
 def _get_channels() -> list[dict]:
-    """Multi-channel list; falls back to the legacy single-channel key."""
+    """Normalize valid destinations; tolerate malformed config and legacy IDs."""
     raw = get_bot_setting("auto_post_channels", "")
-    if raw:
-        try:
-            channels = json.loads(raw)
-            if channels:
-                return channels
-        except Exception:
-            pass
-    legacy = get_bot_setting("auto_post_channel", "")
-    if legacy:
-        return [{"id": legacy, "name": f"Channel {legacy}"}]
-    return []
+    channels = []
+    try:
+        configured = json.loads(raw) if raw else []
+    except (TypeError, ValueError):
+        configured = []
+    if isinstance(configured, list):
+        for entry in configured:
+            if not isinstance(entry, dict):
+                continue
+            channel_id = _channel_id(entry.get("id"))
+            if channel_id:
+                channels.append({**entry, "id": channel_id})
+    if channels:
+        return channels
+    legacy = _channel_id(get_bot_setting("auto_post_channel", ""))
+    return [{"id": legacy, "name": f"Channel {legacy}"}] if legacy else []
 
 
 def _mark_posted(video_id: int) -> None:
     """Record this video as posted + refresh the last-posted timestamp."""
-    from nodick.db import set_bot_setting
     try:
         posted = json.loads(get_bot_setting("auto_post_posted_ids", "[]") or "[]")
     except Exception:
@@ -188,20 +254,33 @@ def _mark_posted(video_id: int) -> None:
     posted = [v for v in posted if v != video_id]
     posted.append(video_id)
     set_bot_setting("auto_post_posted_ids", json.dumps(posted[-400:]))
-    set_bot_setting("auto_post_last", datetime.now().isoformat())
+    set_bot_setting("auto_post_last", datetime.now(timezone.utc).isoformat())
+
+
+def cooldown_seconds_remaining() -> int:
+    """Remaining cooldown, accepting historical naive UTC timestamps."""
+    try:
+        hours = int(get_bot_setting("auto_post_cooldown", "6"))
+    except (TypeError, ValueError, OverflowError):
+        hours = 6
+    hours = min(168, max(0, hours))
+    if not hours:
+        return 0
+    last_str = get_bot_setting("auto_post_last", "")
+    if not last_str:
+        return 0
+    try:
+        last = datetime.fromisoformat(last_str)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        remaining = (last + timedelta(hours=hours) - datetime.now(timezone.utc)).total_seconds()
+        return max(0, math.ceil(remaining))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _cooldown_active() -> bool:
-    """True if the cooldown window hasn't elapsed since the last post."""
-    last_str = get_bot_setting("auto_post_last", "")
-    if not last_str:
-        return False
-    cooldown_hours = int(get_bot_setting("auto_post_cooldown", "6") or "6")
-    try:
-        last = datetime.fromisoformat(last_str)
-    except Exception:
-        return False
-    return datetime.now() - last < timedelta(hours=cooldown_hours)
+    return cooldown_seconds_remaining() > 0
 
 
 # ── Video selection (random from existing stash, repeats avoided) ────────────
@@ -336,13 +415,15 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
     """
     if _cooldown_active() and not force:
         log.info("Auto-post skipped: cooldown active")
+        record_post_result("cooldown", "cooldown")
         return 0
 
     channels = _get_channels()
     if channel_id:
-        channels = [c for c in channels if c["id"] == channel_id]
+        channels = [c for c in channels if c["id"] == str(channel_id)]
     if not channels:
         log.warning("No autopost channels configured")
+        record_post_result("no_channels", "no_channels")
         return 0
 
     # Never publish a placeholder: try several candidates until one has a real
@@ -375,6 +456,8 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
 
     if not video or not blurred:
         log.error("Auto-post aborted: no real thumbnail found after %s candidate(s)", len(tried_ids))
+        status = "no_thumbnail" if tried_ids else "no_videos"
+        record_post_result(status, status)
         return 0
 
     vid_id = video["id"]
@@ -383,6 +466,7 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
     bot_info = await bot.get_me()
     if not bot_info.username:
         log.error("Auto-post aborted: bot has no username for deep links")
+        record_post_result("missing_username", "missing_username", video_id=vid_id)
         return 0
     caption = build_auto_post_caption(video, bot_info.username)
     bot_url = f"https://t.me/{quote(bot_info.username, safe='')}"
@@ -408,6 +492,12 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
             log.error("Failed to post to channel %s: %s", ch["id"], e)
 
     if successes:
-        _mark_posted(vid_id)
+        try:
+            _mark_posted(vid_id)
+        except Exception:
+            log.warning("poster: delivered post but could not save posting history")
 
+    failed = len(channels) - successes
+    status = "sent" if not failed else ("partial" if successes else "failed")
+    record_post_result(status, status, successes=successes, failed=failed, video_id=vid_id)
     return successes
