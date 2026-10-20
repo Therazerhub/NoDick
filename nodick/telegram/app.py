@@ -29,6 +29,7 @@ from telegram.ext import (
 )
 
 from nodick.config import settings
+from nodick.telegram import sponsor
 from nodick.telegram.welcome import DEFAULT_WELCOME_MEDIA, banner_from_message, decode_banner
 from nodick.db import (
     category_count,
@@ -546,6 +547,12 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.answer("✅ Verified! Welcome in… 😏")
     pending_action = context.user_data.pop("pending_after_join", None)
     if pending_action:
+        if pending_action.startswith("pass:"):
+            await sponsor.redeem(update, context, pending_action.split(":", 1)[1])
+            return
+        if pending_action == "sponsor_pass":
+            await sponsor.show_pass(update, context)
+            return
         if pending_action.startswith("video:"):
             video_id = int(pending_action.split(":", 1)[1])
             try:
@@ -603,6 +610,8 @@ def _get_ad_frequency() -> int:
         return 5
 
 async def _maybe_send_ad(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user and is_user_premium(update.effective_user.id):
+        return
     count = context.user_data.get("video_count", 0) + 1
     context.user_data["video_count"] = count
     freq = _get_ad_frequency()
@@ -913,7 +922,8 @@ async def _enrich_and_send(
         caption_text = _local_video_caption(row, meta)
 
     is_admin = _is_admin(update)
-    delete_mins = None if is_admin else _auto_delete_minutes()
+    premium_access = is_admin or bool(update.effective_user and is_user_premium(update.effective_user.id))
+    delete_mins = None if premium_access else _auto_delete_minutes()
     if delete_mins is not None:
         caption_text = _append_auto_delete_notice(caption_text or "", delete_mins)
 
@@ -1112,6 +1122,13 @@ async def _show_autopost_action(update: Update, context: ContextTypes.DEFAULT_TY
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     start_payload = context.args[0] if context.args else None
+    if start_payload and start_payload.startswith("pass_"):
+        match = sponsor.PASS_PAYLOAD.fullmatch(start_payload)
+        if match:
+            await sponsor.redeem(update, context, match.group(1))
+        elif await sponsor._private(update, context):
+            await sponsor._show(update, context, "This Premium pass link is invalid. Request a new pass.", sponsor.pass_keyboard())
+        return
     start_video_id, start_referrer_id = _parse_start_payload(start_payload)
     if user:
         is_new = not user_exists(user.id)
@@ -1599,7 +1616,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if update.callback_query:
         await update.callback_query.answer()
-        if context.user_data.get("waiting_for_setting") == "thumbnail_overlay":
+        if context.user_data.get("waiting_for_setting") in {"thumbnail_overlay", "sponsor_tutorial"}:
             context.user_data.pop("waiting_for_setting", None)
         await _replace_with_text(update, context, "⚙️ *Settings*", settings_keyboard())
     else:
@@ -3118,6 +3135,7 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    markup = sponsor.upsell_keyboard()
     if q:
         await q.answer()
     payment_info = get_bot_setting("payment_info", "")
@@ -3145,13 +3163,13 @@ async def get_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             photo=qr_id,
             caption=text,
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back()
+            reply_markup=markup
         )
     elif q:
-        await _replace_with_text(update, context, text, back())
+        await _replace_with_text(update, context, text, markup)
     else:
         await update.message.reply_text(
-            text, reply_markup=back(), parse_mode=ParseMode.MARKDOWN
+            text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
         )
 
 async def grantadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3228,6 +3246,7 @@ def build_application() -> Application:
 
     # ── Commands ──
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler(["pass", "daypremium"], sponsor.show_pass))
     app.add_handler(CommandHandler("forcejoin", forcejoin_command))
     app.add_handler(CommandHandler("setad", setad_command))
     app.add_handler(CommandHandler("clearad", clearad_command))
@@ -3292,6 +3311,9 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(cast_callback, pattern="^cast_"))
     app.add_handler(CallbackQueryHandler(performer_callback, pattern="^perf"))
     # Monetization callbacks
+    app.add_handler(CallbackQueryHandler(sponsor.show_pass, pattern="^sponsor_pass$"))
+    app.add_handler(CallbackQueryHandler(sponsor.tutorial, pattern="^sponsor_tutorial$"))
+    app.add_handler(CallbackQueryHandler(sponsor.admin_settings, pattern=sponsor.ADMIN_PATTERN))
     app.add_handler(CallbackQueryHandler(verify_join_callback, pattern="^verify_join$"))
     app.add_handler(CallbackQueryHandler(my_account, pattern="^my_account$"))
     app.add_handler(CallbackQueryHandler(my_stats_callback, pattern="^my_stats$"))
@@ -3304,6 +3326,7 @@ def build_application() -> Application:
     # ── Message handlers ──
     # Pending broadcasts must claim all copyable messages before forwarded
     # channel detection or upload indexing consumes them.
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, sponsor.tutorial_input), group=-4)
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, thumbnail_overlay_input), group=-3)
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, welcome_media_input), group=-2)
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, broadcast_input), group=-1)

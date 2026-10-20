@@ -168,6 +168,23 @@ Most recurring configuration lives in the inline **⚙️ Settings** dashboard. 
 
 ---
 
+## Sponsored 1-Day Premium passes
+
+Optional user flow: **Get 1-Day Premium → Open Sponsor Link → provider destination → return to this bot → 24-hour Premium pass**. The return credential expires after **30 minutes**, is bound to the requesting Telegram account, stored as a SHA-256 hash, and can redeem only once. Only a successfully generated and persisted short link can activate its token. Pending valid links are reused instead of repeatedly calling the provider. A sponsored pass does not overwrite or shorten paid/lifetime Premium; it does not stack while an existing pass remains active. Premium access now suppresses sponsored chat ads and auto-delete warnings/timers for newly delivered videos, for paid and sponsored users alike. Keep a persistent PostgreSQL database on Render—ephemeral SQLite cannot preserve redemption state across deployments.
+
+Set these in the Render service's **Environment**, then redeploy:
+
+```dotenv
+SHORTENER_DOMAIN=your-provider.com
+SHORTENER_API_KEY=
+```
+
+Enter your provider's new key in Render, not in this example or in chat. The feature stays unavailable without a domain and key. It uses a common **AdLinkFly-compatible** HTTPS GET API: `/api?api=<key>&url=<destination>` returning JSON `{"status":"success","shortenedUrl":"https://your-provider.com/example"}`. This is **not universal shortener support**. For compatible variants, configure `SHORTENER_API_PATH`, `SHORTENER_API_PARAM`, `SHORTENER_URL_PARAM`, or dotted `SHORTENER_URL_FIELD` (for example `data.url`). `SHORTENER_LINK_DOMAINS` is a comma-separated exact allowlist when returned short links use a different domain. Providers using POST, bearer authentication, or another workflow need a separate adapter.
+
+**Settings → Sponsor Pass** provides an operator toggle and tutorial upload/reset. `SHORTENER_ENABLED=false` disables the feature at environment level. The Tutorial button includes a bundled 24-second **general workflow** video, not a recording of any specific provider. Upload your own guide as a **Telegram video (not a file/document)** from Settings to replace it; the bot previews delivery before saving. Alternatively, set `SHORTENER_TUTORIAL_VIDEO` to a Telegram video file ID / direct MP4 URL. Follow the panel's clear/reset action to return to the configured or bundled default. Regenerate the included video with `python scripts/generate_shortener_tutorial.py` (Pillow and ffmpeg required for generation, not for serving the video).
+
+**Verification boundary:** this validates a user-bound return token, **not** a provider-signed advertisement completion or payable view. Destination extraction/bypass remains possible; do not promise verified ad impressions, bypass-proof monetization, or guaranteed revenue. Use a provider that explicitly permits both your destination content and incentivized traffic. ShrinkMe's published terms prohibit incentives and adult destinations; merely configuring it does not waive those rules. API credentials belong only in environment configuration. Request failures are sanitized; API redirects and unexpected returned-link hosts are rejected. Async HTTP requests have a 15-second overall deadline covering queueing, DNS, and response streaming; timeout closes the response/client instead of abandoning a blocking network thread. No live provider integration is verified until a permitted provider and fresh credentials are configured and tested.
+
 ## 🧬 Architecture
 
 ```mermaid

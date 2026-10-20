@@ -7,6 +7,7 @@ from urllib.parse import quote
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
+from nodick.telegram.sponsor import available as sponsor_available
 from nodick.db import get_bot_setting, get_user_size_limit, is_user_premium, get_user_quota
 
 
@@ -36,6 +37,9 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
     else:
         rows.append([InlineKeyboardButton("👤 My Account", callback_data="my_account")])
     
+    if sponsor_available():
+        rows.append([InlineKeyboardButton("🎁 Get 1-Day Premium", callback_data="sponsor_pass")])
+
     extra = get_bot_setting("extra_admins", "")
     is_extra = False
     if extra and user_id is not None:
@@ -209,7 +213,10 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔒 Force Join", callback_data="prompt_forcejoin"),
             InlineKeyboardButton("🩺 Join Health", callback_data="forcejoin_health")
         ],
-        [InlineKeyboardButton("🚀 Auto-Post Now", callback_data="prompt_autopostnow")],
+        [
+            InlineKeyboardButton("🎁 Sponsor Pass", callback_data="sponsor_settings"),
+            InlineKeyboardButton("🚀 Auto-Post Now", callback_data="prompt_autopostnow"),
+        ],
         [
             InlineKeyboardButton("⚙️ Auto-Post Task", callback_data="toggle_autopost"),
             InlineKeyboardButton("⏰ Post Cooldown", callback_data="prompt_autopost_cooldown")

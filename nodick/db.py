@@ -138,6 +138,8 @@ def init_db() -> None:
         _init_pg()
     else:
         _init_sqlite()
+    from .premium_passes import init_schema
+    init_schema()
 
 
 def _init_pg():
@@ -1263,6 +1265,7 @@ def streak_bar(days: int, width: int = 7) -> str:
 # ── Premium & Core Users ───────────────────────────────────────────────────
 
 def is_user_premium(user_id: int) -> bool:
+    from .premium_passes import has_active_pass
     if user_id == settings.admin_id:
         return True
     extra = get_bot_setting("extra_admins", "")
@@ -1278,13 +1281,13 @@ def is_user_premium(user_id: int) -> bool:
         (user_id,)
     )
     if not row:
-        return False
+        return has_active_pass(user_id)
     
     is_prem = row['is_premium'] if _using_pg else row['is_premium']
     until = row['premium_until'] if _using_pg else row['premium_until']
     
     if not is_prem:
-        return False
+        return has_active_pass(user_id)
         
     if not until:
         return True # Lifetime
@@ -1302,7 +1305,7 @@ def is_user_premium(user_id: int) -> bool:
     else:
         now = datetime.now()
         
-    return until > now
+    return until > now or has_active_pass(user_id)
 
 
 def get_user_quota(user_id: int) -> dict:
@@ -1455,6 +1458,8 @@ def grant_premium(user_id: int, days: int | None = None) -> None:
             )
 
 def revoke_premium(user_id: int) -> None:
+    from .premium_passes import revoke_pass
+    revoke_pass(user_id)
     ph = "%s" if _using_pg else "?"
     _execute(
         f"UPDATE user_settings SET is_premium = 0, premium_until = NULL WHERE user_id = {ph}",

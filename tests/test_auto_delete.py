@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
 from types import SimpleNamespace
 
 from telegram import InlineKeyboardMarkup
@@ -129,7 +130,8 @@ def test_send_video_ref_returns_copy_message_id_for_scheduler():
     assert calls[0]["message_id"] == 99
 
 
-def test_enrich_send_adds_notice_and_schedules_same_30_minute_timer(monkeypatch):
+@pytest.mark.parametrize("premium", [False, True])
+def test_enrich_send_respects_premium_and_30_minute_timer(monkeypatch, premium):
     row = {
         "id": 42,
         "title": "Example Video",
@@ -157,6 +159,7 @@ def test_enrich_send_adds_notice_and_schedules_same_30_minute_timer(monkeypatch)
     monkeypatch.setattr(app, "get_video_metadata", lambda _video_id: None)
     monkeypatch.setattr(app, "_stash_available", False)
     monkeypatch.setattr(app, "_is_admin", lambda _update: False)
+    monkeypatch.setattr(app, "is_user_premium", lambda _user_id: premium)
     monkeypatch.setattr(app, "_auto_delete_minutes", lambda: 30)
     monkeypatch.setattr(
         app,
@@ -195,7 +198,11 @@ def test_enrich_send_adds_notice_and_schedules_same_30_minute_timer(monkeypatch)
     asyncio.run(app._enrich_and_send(update, context, 42))
 
     assert len(sent_captions) == 1
-    assert "Save it before it disappears" in sent_captions[0]
-    assert "auto-deletes in *30 minutes*" in sent_captions[0]
-    assert scheduled[0][1]["when"] == 1800
-    assert scheduled[0][1]["data"] == {"chat_id": 456, "message_id": 900}
+    if premium:
+        assert "Save it before it disappears" not in sent_captions[0]
+        assert scheduled == []
+    else:
+        assert "Save it before it disappears" in sent_captions[0]
+        assert "auto-deletes in *30 minutes*" in sent_captions[0]
+        assert scheduled[0][1]["when"] == 1800
+        assert scheduled[0][1]["data"] == {"chat_id": 456, "message_id": 900}

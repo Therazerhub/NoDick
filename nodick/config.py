@@ -1,7 +1,7 @@
 """NoDick configuration — loaded from .env"""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -60,6 +60,17 @@ class Settings:
     fansdb_graphql_url: str = os.getenv(
         "FANSDB_GRAPHQL_URL", "https://fansdb.cc/graphql"
     )
+
+    # Optional sponsored Premium passes (AdLinkFly-compatible GET API).
+    shortener_domain: str = os.getenv("SHORTENER_DOMAIN", "").strip()
+    shortener_api_key: str = field(default=os.getenv("SHORTENER_API_KEY", "").strip(), repr=False)
+    shortener_api_path: str = os.getenv("SHORTENER_API_PATH", "/api").strip()
+    shortener_api_param: str = os.getenv("SHORTENER_API_PARAM", "api").strip()
+    shortener_url_param: str = os.getenv("SHORTENER_URL_PARAM", "url").strip()
+    shortener_url_field: str = os.getenv("SHORTENER_URL_FIELD", "shortenedUrl").strip()
+    shortener_link_domains: str = os.getenv("SHORTENER_LINK_DOMAINS", "").strip()
+    shortener_tutorial_video: str = os.getenv("SHORTENER_TUTORIAL_VIDEO", "").strip()
+    shortener_enabled: bool = os.getenv("SHORTENER_ENABLED", "true").lower() == "true"
 
     # Matching
     match_threshold: float = _float_env("MATCH_THRESHOLD", 0.0)
