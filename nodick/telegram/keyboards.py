@@ -102,11 +102,7 @@ def video_actions(
 ) -> InlineKeyboardMarkup:
     
     more_text = "🔥 More"
-    if user_id is not None and not is_admin and not is_user_premium(user_id):
-        quota = get_user_quota(user_id)
-        if quota.get("remaining", 0) < 999999: # Not lifetime
-            more_text = f"🔥 More ({quota['remaining']} left)"
-            
+
     rows = [
         [
             InlineKeyboardButton(more_text, callback_data="random"),

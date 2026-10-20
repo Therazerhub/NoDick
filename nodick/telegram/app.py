@@ -147,7 +147,6 @@ except ImportError as e:
 
 WELCOME_MSG_A = """*Your private stream is ready.* 🖤
 
-⚡ *{remaining} watches available*  `{quota_bar}`
 🔥 *{streak}-day streak*
 
 Pick what you want. One tap, instant delivery.
@@ -156,7 +155,6 @@ Pick what you want. One tap, instant delivery.
 
 WELCOME_MSG_B = """*{video_count:,}+ videos. Pick one.* 🖤
 
-⚡ *{remaining} watches available*  `{quota_bar}`
 🔥 *{streak}-day streak*
 
 Try *🎲 Surprise Me* or search the library.
@@ -167,23 +165,13 @@ Try *🎲 Surprise Me* or search the library.
 def _welcome_message(user_id: int | None) -> str:
     """Return the user's stable onboarding experiment variant."""
     if user_id is None:
-        return WELCOME_MSG_A.format(remaining=5, quota_bar="▮▮▮▮▮", streak=0)
+        return WELCOME_MSG_A.format(streak=0)
     variant = get_welcome_variant(user_id)
     if variant:
         mark_welcome_exposure(user_id)
-    quota = get_user_quota(user_id)
     streak = get_user_streak(user_id)["streak"]
-    if quota["is_premium"]:
-        remaining, quota_bar = "Unlimited", "▮▮▮▮▮"
-    else:
-        remaining = quota["remaining"]
-        width = 5
-        filled = min(width, round(width * quota["remaining"] / max(1, quota["limit"])))
-        quota_bar = "▮" * filled + "▯" * (width - filled)
     values = {
         "video_count": db_video_count(),
-        "remaining": remaining,
-        "quota_bar": quota_bar,
         "streak": streak,
     }
     return (WELCOME_MSG_B if variant == "B" else WELCOME_MSG_A).format(**values)
@@ -1054,19 +1042,35 @@ async def _replace_with_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 
 async def _send_quota_exhausted(update: Update, context) -> None:
-    quota = get_user_quota(update.effective_user.id)
-    text = (
-        "🚫 *Your free watches are used up.*\n\n"
-        f"📊 `{quota['used']}/{quota['limit']}` used\n"
-        "🎁 Activate referrals for bonus watches, or unlock Premium."
-    )
-    markup = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer"),
-            InlineKeyboardButton("👑 Premium", callback_data="get_premium"),
-        ],
-        [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-    ])
+    """Route exhausted free users to the sponsor pass (or premium upsell)."""
+    from nodick.telegram import sponsor as _sponsor
+    from nodick.services import shortener as _shortener
+    if _shortener.configured():
+        text = (
+            "🚫 *Your free watches are used up.*\n\n"
+            "Unlock *24 hours of unlimited Premium* — free.\n"
+            "Just follow one quick sponsor link and come back."
+        )
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎁 Get 1-Day Premium", callback_data="sponsor_pass")],
+            [
+                InlineKeyboardButton("🎬 Tutorial", callback_data="sponsor_tutorial"),
+                InlineKeyboardButton("👑 Buy Premium", callback_data="get_premium"),
+            ],
+            [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+        ])
+    else:
+        text = (
+            "🚫 *Your free watches are used up.*\n\n"
+            "🎁 Activate referrals for bonus watches, or unlock Premium."
+        )
+        markup = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎁 Invite & Earn", callback_data="refer"),
+                InlineKeyboardButton("👑 Premium", callback_data="get_premium"),
+            ],
+            [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+        ])
     if update.callback_query:
         try:
             await update.callback_query.answer(
@@ -3010,15 +3014,6 @@ async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Status: {status}\n"
         f"Videos watched: {quota['used']}\n"
     )
-    if not premium:
-        total_blocks = 10
-        if quota['limit'] > 0:
-            filled = min(total_blocks, int(total_blocks * quota['remaining'] / quota['limit']))
-        else:
-            filled = total_blocks
-        empty = total_blocks - filled
-        bar = f"[{'▮' * filled}{'▯' * empty}]"
-        text += f"Daily Quota: `{bar}` {quota['remaining']}/{quota['limit']}\n"
     text += (
         f"🎁 Referrals: {ref_count}\n"
         f"⚡ Referral bonus earned: +{referral_bonus_total}\n"
