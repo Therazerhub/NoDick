@@ -1791,10 +1791,10 @@ def get_growth_metrics(days: int = 30) -> dict:
             )
             SELECT COUNT(*) FILTER (WHERE cohort_date <= CURRENT_DATE - 1) AS d1_eligible,
                    COUNT(*) FILTER (WHERE cohort_date <= CURRENT_DATE - 1 AND EXISTS (
-                     SELECT 1 FROM activity a WHERE a.user_id=c.user_id AND a.created_at=c.cohort_date+1)) AS d1,
+                     SELECT 1 FROM activity a WHERE a.user_id=c.user_id AND a.activity_date=c.cohort_date+1)) AS d1,
                    COUNT(*) FILTER (WHERE cohort_date <= CURRENT_DATE - 7) AS d7_eligible,
                    COUNT(*) FILTER (WHERE cohort_date <= CURRENT_DATE - 7 AND EXISTS (
-                     SELECT 1 FROM activity a WHERE a.user_id=c.user_id AND a.created_at=c.cohort_date+7)) AS d7
+                     SELECT 1 FROM activity a WHERE a.user_id=c.user_id AND a.activity_date=c.cohort_date+7)) AS d7
             FROM cohorts c
         """
     else:
