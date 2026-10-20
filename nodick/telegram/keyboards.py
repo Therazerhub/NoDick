@@ -199,7 +199,7 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔗 Ref GIF", callback_data="prompt_refergif"),
         ],
         [
-            InlineKeyboardButton("🖼️ Welcome GIF", callback_data="prompt_welcomegif"),
+            InlineKeyboardButton("🖼️ Welcome Media", callback_data="prompt_welcomegif"),
             InlineKeyboardButton("📋 Logs Channel", callback_data="prompt_logschannel")
         ],
         [

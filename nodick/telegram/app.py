@@ -29,6 +29,7 @@ from telegram.ext import (
 )
 
 from nodick.config import settings
+from nodick.telegram.welcome import DEFAULT_WELCOME_MEDIA, banner_from_message, decode_banner
 from nodick.db import (
     category_count,
     connect,
@@ -238,6 +239,66 @@ def _is_admin(update: Update) -> bool:
     return False
 
 
+async def _send_welcome(update, context, text, markup):
+    """Send the selected banner, falling back to text without stranding the menu."""
+    message = update.callback_query.message if update.callback_query else update.message
+    sent = None
+    try:
+        banner = decode_banner(get_bot_setting("welcome_media", DEFAULT_WELCOME_MEDIA))
+        if banner:
+            kind = banner["type"]
+            sender = getattr(context.bot, f"send_{kind}")
+            sent = await sender(
+                chat_id=message.chat_id, **{kind: banner["media"]},
+                caption=text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN,
+            )
+    except Exception:
+        log.exception("Welcome banner unavailable; sending text menu")
+    if sent is None:
+        sent = await context.bot.send_message(
+            chat_id=message.chat_id, text=text, reply_markup=markup,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    # Delete only after a replacement exists, including after force-join.
+    if update.callback_query:
+        try:
+            await message.delete()
+        except Exception:
+            log.debug("Could not remove previous welcome/menu message", exc_info=True)
+    return sent
+
+
+async def welcome_media_input(update, context):
+    """Claim admin banner uploads before forwarding/import/indexing handlers."""
+    if context.user_data.get("waiting_for_setting") != "welcomegif":
+        return
+    if not _is_admin(update):
+        context.user_data.pop("waiting_for_setting", None)
+        raise ApplicationHandlerStop
+    try:
+        banner = banner_from_message(update.message)
+        # Validate with Telegram before persisting; a broken URL keeps the old banner.
+        if banner:
+            kind = banner["type"]
+            await getattr(context.bot, f"send_{kind}")(
+                chat_id=update.effective_chat.id, **{kind: banner["media"]},
+                caption="Welcome banner preview",
+            )
+        set_bot_setting("welcome_media", json.dumps(banner) if banner else "")
+        context.user_data.pop("waiting_for_setting", None)
+        await update.message.reply_text(
+            "✅ Welcome media updated." if banner else "✅ Welcome media disabled.",
+            reply_markup=settings_keyboard(),
+        )
+    except Exception as exc:
+        log.warning("Welcome media update rejected: %s", exc)
+        await update.message.reply_text(
+            "Could not save that banner. Send a photo, GIF, MP4, or a direct media URL "
+            "(not a Tenor/GIPHY page). Your previous banner is unchanged. /cancel to abort."
+        )
+    raise ApplicationHandlerStop
+
+
 # ── Force Join check ──────────────────────────────────────────────────────
 
 def _force_join_config(raw: str | None = None) -> dict:
@@ -404,24 +465,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     markup = main_menu(user_id)
     welcome_text = _welcome_message(user_id)
-    welcome_gif = get_bot_setting("welcome_gif", "")
-    
-    if welcome_gif:
-        try:
-            # We must delete the old text lock screen and send the new GIF
-            await q.message.delete()
-            await context.bot.send_animation(
-                chat_id=q.message.chat_id,
-                animation=welcome_gif,
-                caption=welcome_text,
-                reply_markup=markup,
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-        except Exception as e:
-            pass # fallback to edit text
-            
-    await q.edit_message_text(welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    await _send_welcome(update, context, welcome_text, markup)
 
 # ── In-Bot Ad system ──────────────────────────────────────────────────────
 
@@ -978,55 +1022,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     markup = main_menu(user.id if user else None)
     welcome_text = _welcome_message(user.id if user else None)
     
-    welcome_gif = get_bot_setting("welcome_gif", "")
-    
     if update.callback_query:
         await update.callback_query.answer()
-        cmsg = update.callback_query.message
-        
-        has_media = bool(cmsg.video or cmsg.document or cmsg.animation or cmsg.photo)
-        is_photo = bool(cmsg.photo)
-
-        if welcome_gif:
-            # We want the welcome media. If current message is text OR a Photo (like the QR code), swap it out.
-            if not has_media or is_photo:
-                try:
-                    await cmsg.delete()
-                except Exception:
-                    pass
-                return await context.bot.send_animation(
-                    chat_id=cmsg.chat_id, animation=welcome_gif, caption=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
-                )
-            else:
-                try:
-                    await update.callback_query.edit_message_caption(caption=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    pass
-        else:
-            # We want plain text. If current is any media, swap it out.
-            if has_media:
-                try:
-                    await cmsg.delete()
-                except Exception:
-                    pass
-                return await context.bot.send_message(
-                    chat_id=cmsg.chat_id, text=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
-                )
-            else:
-                try:
-                    await update.callback_query.edit_message_text(text=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    pass
-    else:
-        if welcome_gif:
-            try:
-                await update.message.reply_animation(animation=welcome_gif, caption=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-            except Exception:
-                await update.message.reply_text(text=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-        else:
-            await update.message.reply_text(
-                text=welcome_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
-            )
+    await _send_welcome(update, context, welcome_text, markup)
 
 
 # ── Command: /random ───────────────────────────────────────────────────────
@@ -1533,7 +1531,7 @@ async def prompt_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "revokepremium": "Send me the *User IDs* you want to revoke Premium from, separated by spaces:",
         "grantadmin": "Send me the *User IDs* to grant Admin rights to, separated by spaces:",
         "revokeadmin": "Send me the *Admin IDs* to revoke Admin rights from, separated by spaces:",
-        "welcomegif": "Send a URL to a GIF or Video to serve as the Welcome Banner (e.g. a Tenor link):\n\n_(Send `clear` to disable)_",
+        "welcomegif": "Send a *Photo, GIF, or MP4* for the Welcome Banner, or a direct media URL.\n\n_(Send `clear` to disable; /cancel to abort)_",
         "refergif": "Send a URL to a GIF or Video to serve as the Referral Banner (e.g. a Tenor link):\n\n_(Send `clear` to disable)_",
         "broadcast": "Send the message you want to broadcast to ALL your bot users:\n\n_(Standard text and Telegram formatting allowed)_",
     }
@@ -2181,12 +2179,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             set_bot_setting("extra_admins", " ".join(new_list))
             msg = f"✅ Revoked Admin from {removed} users."
         elif setting == "welcomegif":
-            if text.lower() == "clear":
-                set_bot_setting("welcome_gif", "")
-                msg = "✅ Welcome GIF disabled."
-            else:
-                set_bot_setting("welcome_gif", text)
-                msg = "✅ Welcome GIF updated!"
+            context.user_data["waiting_for_setting"] = setting
+            return await welcome_media_input(update, context)
                 
         elif setting == "refergif":
             if text.lower() == "clear":
@@ -3168,6 +3162,7 @@ def build_application() -> Application:
     # ── Message handlers ──
     # Pending broadcasts must claim all copyable messages before forwarded
     # channel detection or upload indexing consumes them.
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, welcome_media_input), group=-2)
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, broadcast_input), group=-1)
     # Forwarded-from-channel detection must come BEFORE video handler
     # so it can offer batch import instead of single index

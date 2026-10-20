@@ -158,6 +158,8 @@ Telegram UI ◄── search / random / cast / similar / categories
 
 Most recurring configuration lives in the inline **⚙️ Settings** dashboard. Slash-command archaeology is kept to a minimum because this is software, not a ritual.
 
+**Welcome banner:** Open **Settings → Welcome Media**, then send a photo, GIF, MP4, or a direct `.jpg`/`.png`/`.webp`/`.gif`/`.mp4` URL. Uploads (including forwarded media) are captured before library import handlers. The bot previews the media through Telegram before saving it; invalid input retains the previous banner. Send `clear` to disable the banner or `/cancel` to leave it unchanged. The typed `welcome_media` bot setting persists across restarts and supersedes the old `welcome_gif` setting. Until overridden, the banner uses `https://files.catbox.moe/j9r0xf.jpg`. `/start`, the main-menu return, and successful force-join verification share the same renderer, with a text-menu fallback if the media cannot load. GIF website pages are not direct media URLs; download the file and upload it to the bot instead.
+
 ---
 
 ## 🧬 Architecture
