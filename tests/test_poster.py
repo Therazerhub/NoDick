@@ -111,6 +111,7 @@ def test_autoposter_sends_only_censored_thumbnail(monkeypatch):
         {"class": "BUTTOCKS_EXPOSED", "score": 0.9, "box": [50, 50, 20, 20]}
     ]))
     thumbnail_safety._cache.clear()
+    monkeypatch.setattr(thumbnail_safety, "get_bot_setting", lambda key, default='': default)
     source = _source_jpeg()
     video = {
         "id": 42,

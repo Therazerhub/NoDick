@@ -185,7 +185,10 @@ def settings_keyboard() -> InlineKeyboardMarkup:
     
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(action_text, callback_data="toggle_action_buttons")],
-        [InlineKeyboardButton("🎬 Quality Limit", callback_data="quality")],
+        [
+            InlineKeyboardButton("🎬 Quality Limit", callback_data="quality"),
+            InlineKeyboardButton("🖼 Thumbnail Style", callback_data="thumbnail_menu"),
+        ],
         [
             InlineKeyboardButton(autodel_text, callback_data="toggle_autodelete"),
             InlineKeyboardButton("⏳ Delete Timer", callback_data="prompt_autodelete_timer")
@@ -224,6 +227,30 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("❌ Revoke Admin", callback_data="prompt_revokeadmin")
         ],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")],
+    ])
+
+
+def thumbnail_keyboard() -> InlineKeyboardMarkup:
+    style = get_bot_setting("thumbnail_style", "pixelation") or "pixelation"
+    strength = get_bot_setting("thumbnail_strength", "medium") or "medium"
+    if style not in ("pixelation", "blur", "solid", "overlay"):
+        style = "solid"
+    if strength not in ("low", "medium", "high"):
+        strength = "medium"
+
+    def button(value, label, current, kind):
+        return InlineKeyboardButton(
+            f"{'✅ ' if value == current else ''}{label}",
+            callback_data=f"thumbnail_{kind}_{value}",
+        )
+
+    return InlineKeyboardMarkup([
+        [button("pixelation", "Pixelation", style, "style"), button("blur", "Blur", style, "style")],
+        [button("solid", "Solid", style, "style"), button("overlay", "Custom PNG", style, "style")],
+        [button(value, value.title(), strength, "strength") for value in ("low", "medium", "high")],
+        [InlineKeyboardButton("Upload PNG", callback_data="thumbnail_upload"),
+         InlineKeyboardButton("Remove PNG", callback_data="thumbnail_clear")],
+        [InlineKeyboardButton("🔙 Settings", callback_data="settings")],
     ])
 
 

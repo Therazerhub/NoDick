@@ -97,6 +97,7 @@ from nodick.telegram.keyboards import (
     part_nav_row,
     quality_keyboard,
     settings_keyboard,
+    thumbnail_keyboard,
     video_actions,
     account_keyboard,
     referral_keyboard,
@@ -266,6 +267,116 @@ async def _send_welcome(update, context, text, markup):
         except Exception:
             log.debug("Could not remove previous welcome/menu message", exc_info=True)
     return sent
+
+
+_THUMBNAIL_PNG_LIMIT = 512 * 1024
+THUMBNAIL_CALLBACK_PATTERN = r"^thumbnail_(?:menu|upload|clear|style_(?:pixelation|blur|solid|overlay)|strength_(?:low|medium|high))\Z"
+
+
+def _normalize_thumbnail_png(data: bytes) -> bytes:
+    """Bound encoded size and PNG dimensions before Pillow decodes pixels."""
+    import io
+    import struct
+    from PIL import Image
+
+    if not data or len(data) > _THUMBNAIL_PNG_LIMIT:
+        raise ValueError("PNG size")
+    if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[8:16] != b"\x00\x00\x00\rIHDR":
+        raise ValueError("PNG header")
+    width, height = struct.unpack(">II", data[16:24])
+    if not (0 < width <= 1024 and 0 < height <= 1024 and width * height <= 1_000_000):
+        raise ValueError("PNG dimensions")
+    with Image.open(io.BytesIO(data)) as image:
+        if image.format != "PNG" or getattr(image, "is_animated", False):
+            raise ValueError("Static PNG required")
+        image.verify()
+    with Image.open(io.BytesIO(data)) as image:
+        normalized = image.convert("RGBA")
+        # Reconstruct to discard uploaded metadata/profiles, retaining alpha.
+        clean = Image.frombytes("RGBA", normalized.size, normalized.tobytes())
+        output = io.BytesIO()
+        clean.save(output, format="PNG")
+    result = output.getvalue()
+    if len(result) > _THUMBNAIL_PNG_LIMIT:
+        raise ValueError("Normalized PNG size")
+    return result
+
+
+def _save_thumbnail_setting(key, value):
+    set_bot_setting(key, value)
+    if get_bot_setting(key, "__missing_thumbnail_setting__") != value:
+        raise ValueError("Setting readback failed")
+
+
+async def thumbnail_settings(update, context):
+    q = update.callback_query
+    if not _is_admin(update):
+        await q.answer("❌ Admin only.", show_alert=True)
+        return
+    await q.answer()
+    action = q.data
+    if not re.fullmatch(THUMBNAIL_CALLBACK_PATTERN, action):
+        return
+    notice = "Choose a thumbnail style and strength. Changes save immediately."
+    try:
+        if action == "thumbnail_upload":
+            context.user_data["waiting_for_setting"] = "thumbnail_overlay"
+            notice = "Send a static PNG as a document (not a photo). Max 512 KiB, 1024 × 1024 and 1 million pixels. /cancel to abort."
+        elif action == "thumbnail_clear":
+            _save_thumbnail_setting("thumbnail_overlay_png", "")
+            if get_bot_setting("thumbnail_style", "pixelation") == "overlay":
+                _save_thumbnail_setting("thumbnail_style", "pixelation")
+            if context.user_data.get("waiting_for_setting") == "thumbnail_overlay":
+                context.user_data.pop("waiting_for_setting", None)
+            notice = "✅ Custom PNG removed."
+        elif action.startswith("thumbnail_style_"):
+            style = action.removeprefix("thumbnail_style_")
+            if style == "overlay":
+                raw = get_bot_setting("thumbnail_overlay_png", "") or ""
+                if len(raw) > 4 * ((_THUMBNAIL_PNG_LIMIT + 2) // 3):
+                    raise ValueError("Saved PNG size")
+                await asyncio.to_thread(_normalize_thumbnail_png, base64.b64decode(raw, validate=True))
+            _save_thumbnail_setting("thumbnail_style", style)
+            notice = "✅ Thumbnail style saved."
+        elif action.startswith("thumbnail_strength_"):
+            _save_thumbnail_setting("thumbnail_strength", action.removeprefix("thumbnail_strength_"))
+            notice = "✅ Thumbnail strength saved."
+    except Exception:
+        notice = "Could not save that setting. For Custom PNG, upload a valid PNG first."
+    await _replace_with_text(update, context, notice, thumbnail_keyboard())
+
+
+async def thumbnail_overlay_input(update, context):
+    """Claim only pending overlay input, before welcome/broadcast/import."""
+    if context.user_data.get("waiting_for_setting") != "thumbnail_overlay":
+        return
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Admin only.")
+        raise ApplicationHandlerStop
+    try:
+        document = getattr(update.message, "document", None)
+        if document is None:
+            raise ValueError("Send PNG as document")
+        if document.file_size is not None and document.file_size > _THUMBNAIL_PNG_LIMIT:
+            raise ValueError("PNG size")
+        file = await document.get_file()
+        if file.file_size is not None and file.file_size > _THUMBNAIL_PNG_LIMIT:
+            raise ValueError("PNG size")
+        data = bytes(await file.download_as_bytearray())
+        png = await asyncio.to_thread(_normalize_thumbnail_png, data)
+        encoded = base64.b64encode(png).decode("ascii")
+        _save_thumbnail_setting("thumbnail_overlay_png", encoded)
+        _save_thumbnail_setting("thumbnail_style", "overlay")
+    except Exception:
+        await update.message.reply_text(
+            "Could not save that PNG. Send a static PNG document up to 512 KiB, "
+            "1024 × 1024 and 1 million pixels. Previous PNG is kept for invalid uploads. /cancel to abort."
+        )
+    else:
+        if context.user_data.get("waiting_for_setting") == "thumbnail_overlay":
+            context.user_data.pop("waiting_for_setting", None)
+        await update.message.reply_text("✅ Custom PNG saved and selected.", reply_markup=thumbnail_keyboard())
+    raise ApplicationHandlerStop
 
 
 async def welcome_media_input(update, context):
@@ -1481,10 +1592,15 @@ async def performer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update):
-        await update.message.reply_text("❌ Admin only.")
+        if update.callback_query:
+            await update.callback_query.answer("❌ Admin only.", show_alert=True)
+        else:
+            await update.message.reply_text("❌ Admin only.")
         return
     if update.callback_query:
         await update.callback_query.answer()
+        if context.user_data.get("waiting_for_setting") == "thumbnail_overlay":
+            context.user_data.pop("waiting_for_setting", None)
         await _replace_with_text(update, context, "⚙️ *Settings*", settings_keyboard())
     else:
         await update.message.reply_text("⚙️ Settings", reply_markup=settings_keyboard())
@@ -3161,6 +3277,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(import_status, pattern="^import_status$"))
     app.add_handler(CallbackQueryHandler(stats, pattern="^stats$"))
     app.add_handler(CallbackQueryHandler(settings_command, pattern="^settings$"))
+    app.add_handler(CallbackQueryHandler(thumbnail_settings, pattern=THUMBNAIL_CALLBACK_PATTERN))
     app.add_handler(CallbackQueryHandler(force_join_health, pattern="^forcejoin_health$"))
     app.add_handler(CallbackQueryHandler(toggle_setting, pattern="^toggle_"))
     app.add_handler(CallbackQueryHandler(prompt_setting, pattern="^prompt_"))
@@ -3187,6 +3304,7 @@ def build_application() -> Application:
     # ── Message handlers ──
     # Pending broadcasts must claim all copyable messages before forwarded
     # channel detection or upload indexing consumes them.
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, thumbnail_overlay_input), group=-3)
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, welcome_media_input), group=-2)
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, broadcast_input), group=-1)
     # Forwarded-from-channel detection must come BEFORE video handler

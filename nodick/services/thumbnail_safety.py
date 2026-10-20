@@ -4,6 +4,7 @@ Detection is imperfect: no detections are NOT evidence of safety. Use a
 source-free branded card on no sensitive detections, any error, or timeout.
 """
 import asyncio
+import base64
 from collections import OrderedDict
 import hashlib
 import io
@@ -13,7 +14,8 @@ import math
 import os
 import sys
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageOps, ImageFilter
+from nodick.db import get_bot_setting
 
 log = logging.getLogger(__name__)
 SENSITIVE = {
@@ -50,10 +52,39 @@ def prepare_image(raw):
     return out.getvalue()
 
 
-def mask_regions(raw, detections):
+def get_thumbnail_config():
+    style = get_bot_setting('thumbnail_style', 'pixelation') or 'pixelation'
+    strength = get_bot_setting('thumbnail_strength', 'medium') or 'medium'
+    if style not in {'pixelation', 'blur', 'solid', 'overlay'}:
+        style = 'solid'
+    if strength not in {'low', 'medium', 'high'}:
+        strength = 'medium'
+    overlay = (get_bot_setting('thumbnail_overlay_png', '') or '') if style == 'overlay' else ''
+    return style, strength, overlay
+
+
+def decode_overlay(encoded):
+    if not encoded or len(encoded) > 700_000:
+        raise ValueError('Missing or oversized overlay')
+    raw = base64.b64decode(encoded, validate=True)
+    if len(raw) > 512 * 1024:
+        raise ValueError('Oversized overlay')
+    with Image.open(io.BytesIO(raw)) as source:
+        if source.format != 'PNG' or source.width > 1024 or source.height > 1024 or source.width * source.height > 1_000_000:
+            raise ValueError('Invalid overlay image')
+        return source.convert('RGBA')
+
+
+def mask_regions(raw, detections, style='pixelation', strength='medium', overlay_png=''):
     with Image.open(io.BytesIO(raw)) as source:
         image = source.convert('RGB')
-    draw = ImageDraw.Draw(image)
+    original = image.copy()
+    # Validate even with no detections: corrupt configuration must fail closed.
+    if style not in {'pixelation', 'blur', 'solid', 'overlay'}:
+        raise ValueError('Invalid thumbnail style')
+    if strength not in {'low', 'medium', 'high'}:
+        raise ValueError('Invalid thumbnail strength')
+    overlay = decode_overlay(overlay_png) if style == 'overlay' else None
     masked = 0
     for detection in detections:
         if detection.get('class') not in SENSITIVE:
@@ -70,7 +101,24 @@ def mask_regions(raw, detections):
                min(image.width, math.ceil(x+w+px)), min(image.height, math.ceil(y+h+py)))
         if box[2] <= box[0] or box[3] <= box[1]:
             raise ValueError('Detection box outside image')
-        draw.rectangle(box, fill=(18, 18, 24))
+        size = (box[2] - box[0], box[3] - box[1])
+        if style == 'solid' or style == 'overlay':
+            region = Image.new('RGB', size, (18, 18, 24))
+            if overlay is not None:
+                sticker = ImageOps.contain(overlay, size, method=Image.Resampling.LANCZOS)
+                offset = ((size[0] - sticker.width) // 2, (size[1] - sticker.height) // 2)
+                region.paste(sticker, offset, sticker)
+        elif style == 'pixelation':
+            # Coarse grid, not a mild resize. Strength sets maximum grid cells
+            # across the shortest dimension; each cell spans at least 12px.
+            cells = {'low': 8, 'medium': 4, 'high': 2}[strength]
+            cell = max(12, math.ceil(min(size) / cells))
+            small = (max(1, size[0] // cell), max(1, size[1] // cell))
+            region = original.crop(box).resize(small, Image.Resampling.BOX).resize(size, Image.Resampling.NEAREST)
+        else:
+            radius = max(12, min(size) * {'low': .15, 'medium': .25, 'high': .40}[strength])
+            region = original.crop(box).filter(ImageFilter.GaussianBlur(radius))
+        image.paste(region, box[:2])
         masked += 1
     if not masked:
         return neutral_thumbnail()
@@ -104,7 +152,14 @@ async def _detect(raw):
 
 
 async def create_censored_thumbnail(raw):
-    key = hashlib.sha256(raw).hexdigest()
+    try:
+        config = await asyncio.to_thread(get_thumbnail_config)
+    except Exception:
+        log.exception('Thumbnail settings unavailable; using neutral card')
+        return await asyncio.to_thread(neutral_thumbnail)
+    # Style, strength and overlay content all participate: old rendered images
+    # must never survive an admin's configuration change.
+    key = hashlib.sha256(raw + json.dumps(config).encode()).hexdigest()
     async with _gate:
         if key in _cache:
             _cache.move_to_end(key)
@@ -112,7 +167,7 @@ async def create_censored_thumbnail(raw):
         try:
             prepared = await asyncio.to_thread(prepare_image, raw)
             detections = await _detect(prepared)
-            result = await asyncio.to_thread(mask_regions, prepared, detections)
+            result = await asyncio.to_thread(mask_regions, prepared, detections, *config)
         except Exception:
             log.exception('Selective thumbnail unavailable; using source-free neutral card')
             return await asyncio.to_thread(neutral_thumbnail)

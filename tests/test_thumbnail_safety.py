@@ -9,6 +9,11 @@ from PIL import Image
 from nodick.services import thumbnail_safety as safety
 
 
+@pytest.fixture(autouse=True)
+def default_config(monkeypatch):
+    monkeypatch.setattr(safety, 'get_bot_setting', lambda key, default='': default)
+
+
 def source():
     out = io.BytesIO()
     Image.new('RGB', (960, 540), (220, 80, 90)).save(out, 'PNG')
@@ -16,7 +21,7 @@ def source():
 
 
 def test_mask_is_opaque_and_padded():
-    image = safety.mask_regions(source(), [{'class':'FEMALE_BREAST_EXPOSED','score':.9,'box':[300,200,100,100]}])
+    image = safety.mask_regions(source(), [{'class':'FEMALE_BREAST_EXPOSED','score':.9,'box':[300,200,100,100]}], style='solid')
     result = Image.open(io.BytesIO(image))
     assert result.size == (960, 540)
     assert max(result.getpixel((290, 220))) < 30
