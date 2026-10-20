@@ -56,9 +56,10 @@ def test_preconditions_report_exact_reason(monkeypatch, store, ready, case):
     elif case == "no_videos":
         monkeypatch.setattr(poster, "_select_video", lambda: None)
     elif case == "no_thumbnail":
+        status = "no_source"
         monkeypatch.setattr(poster, "_fetch_teaser_source", AsyncMock(return_value=(None, "none")))
     elif case == "render_failed":
-        status = "no_thumbnail"
+        status = "no_render"
         monkeypatch.setattr(thumbnail_safety, "create_censored_thumbnail", AsyncMock(return_value=b""))
     elif case == "missing_username":
         ready.get_me.return_value.username = None

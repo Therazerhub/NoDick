@@ -72,7 +72,8 @@ def test_autopost_html_buttons_and_actual_bot(monkeypatch):
     monkeypatch.setattr(poster, '_get_channels', lambda: [{"id": "-1001"}])
     monkeypatch.setattr(poster, '_select_video', lambda: video)
     monkeypatch.setattr(poster, '_fetch_teaser_source', AsyncMock(return_value=(b'source', 'telegram')))
-    monkeypatch.setattr(poster, 'create_blurred_thumbnail', lambda _: b'rendered')
+    from nodick.services import thumbnail_safety
+    monkeypatch.setattr(thumbnail_safety, 'create_censored_thumbnail', AsyncMock(return_value=b'rendered'))
     monkeypatch.setattr(poster, '_mark_posted', lambda _: None)
     bot = SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(username='actual_bot')), send_photo=AsyncMock())
     assert asyncio.run(poster.send_auto_post(bot, force=True)) == 1

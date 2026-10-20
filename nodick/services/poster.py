@@ -24,6 +24,7 @@ except ImportError:
 import requests
 
 log = logging.getLogger(__name__)
+TELEGRAM_THUMB_TIMEOUT = 15
 
 
 # ── Image helpers ────────────────────────────────────────────────────────────
@@ -52,24 +53,24 @@ def fetch_scene_image(scene_id: str) -> Optional[bytes]:
         if not images:
             log.warning("poster: scene %s has no StashDB images", scene_id)
             return None
-        # Pick the LARGEST image (first entry can be a tiny thumbnail)
-        best = max(
-            images,
-            key=lambda im: (im.get("width") or 0) * (im.get("height") or 0),
-        )
-        url = best.get("url")
-        if not url:
-            return None
-        # CDNs (and stashdb itself) reject requests without a UA
-        resp = requests.get(
-            url, timeout=10,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; NoDickPoster/1.0)"},
-        )
-        if resp.status_code == 200 and resp.content:
-            log.info("poster: StashDB image OK (%s bytes, %sx%s)",
-                     len(resp.content), best.get("width"), best.get("height"))
-            return resp.content
-        log.warning("poster: StashDB image HTTP %s for scene %s", resp.status_code, scene_id)
+        # Prefer a large usable image, but do not let one expired/invalid CDN
+        # response hide the other artwork variants provided for this scene.
+        candidates = [image for image in images if isinstance(image, dict) and image.get('url')
+                      and (image.get('width') or 0) * (image.get('height') or 0) <= 16_000_000]
+        candidates.sort(key=lambda image: (image.get('width') or 0) * (image.get('height') or 0), reverse=True)
+        for best in candidates[:3]:
+            try:
+                resp = requests.get(
+                    best['url'], timeout=10,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; NoDickPoster/1.0)"},
+                )
+                if resp.status_code == 200 and _valid_source_bytes(resp.content):
+                    log.info('poster: StashDB image OK (%s bytes, %sx%s)',
+                             len(resp.content), best.get('width'), best.get('height'))
+                    return resp.content
+                log.warning('poster: scene %s artwork variant was unavailable or invalid (HTTP %s)', scene_id, resp.status_code)
+            except requests.RequestException:
+                log.warning('poster: scene %s artwork variant download failed', scene_id)
     except Exception as e:
         log.error("Failed to fetch scene image for %s: %s", scene_id, e)
     return None
@@ -84,7 +85,7 @@ def create_blurred_thumbnail(image_bytes: bytes) -> bytes:
     blur visually intentional while still hiding explicit detail.
     """
     if not HAS_PIL:
-        return image_bytes
+        return b''
     try:
         from PIL import Image, ImageEnhance, ImageFilter, ImageOps, ImageStat
         with Image.open(io.BytesIO(image_bytes)) as source:
@@ -117,7 +118,7 @@ def create_blurred_thumbnail(image_bytes: bytes) -> bytes:
         return b""
 
 
-async def fetch_telegram_thumb(video: dict) -> Optional[bytes]:
+async def _fetch_telegram_thumb(video: dict) -> Optional[bytes]:
     """Pull the video's own Telegram thumbnail via Telethon, if available.
 
     Uses ``source_chat_id`` + ``source_message_id`` (set by the importer) to
@@ -129,6 +130,14 @@ async def fetch_telegram_thumb(video: dict) -> Optional[bytes]:
     """
     chat_id = video.get("source_chat_id")
     msg_id = video.get("source_message_id")
+    if not chat_id or not msg_id:
+        # Older imports may keep the origin only in the delivery reference.
+        reference = str(video.get('file_id') or '')
+        match = re.fullmatch(r'channel_ref:(-?[0-9]+):([0-9]+)', reference)
+        if match:
+            chat_id, msg_id = int(match.group(1)), int(match.group(2))
+    if isinstance(chat_id, str) and re.fullmatch(r'-?[0-9]+', chat_id):
+        chat_id = int(chat_id)
     if not chat_id or not msg_id:
         log.warning(
             "poster: video %s has no source_chat_id/source_message_id for Telegram thumbnail",
@@ -163,6 +172,28 @@ async def fetch_telegram_thumb(video: dict) -> Optional[bytes]:
         return None
 
 
+async def fetch_telegram_thumb(video: dict) -> Optional[bytes]:
+    try:
+        return await asyncio.wait_for(_fetch_telegram_thumb(video), timeout=TELEGRAM_THUMB_TIMEOUT)
+    except TimeoutError:
+        log.warning('Telegram thumbnail timed out for video %s', video.get('id'))
+        return None
+
+
+def _valid_source_bytes(data):
+    if not isinstance(data, bytes) or not data or len(data) > 8 * 1024 * 1024:
+        return False
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as image:
+            if image.width * image.height > 16_000_000:
+                return False
+            image.verify()
+        return True
+    except Exception:
+        return False
+
+
 # ── Channel / cooldown state (bot_settings-backed, both backends) ────────────
 
 POST_RESULT_REASONS = {
@@ -170,6 +201,8 @@ POST_RESULT_REASONS = {
     "no_channels": "No valid destination channels are configured.",
     "no_videos": "No eligible videos with StashDB metadata were found. Enrich the library first.",
     "no_thumbnail": "No usable source or rendered thumbnail was found in the candidate attempts.",
+    "no_source": "No original image was available from StashDB or Telegram for the attempted videos. Check source access; full blur also needs a real image.",
+    "no_render": "Original images were found, but thumbnail rendering failed or fallback is set to Skip. Check Thumbnail Style and fallback.",
     "missing_username": "The bot has no username for video links.",
     "failed": "Sending failed for every destination. Check channel access and bot permissions.",
     "partial": "Sent to some destinations; other destinations failed. Check channel access and bot permissions.",
@@ -289,7 +322,7 @@ def _cooldown_active() -> bool:
 # whole stash has been posted, we accept a repeat (the cooldown caps rate).
 
 SELECT_SQL = """
-    SELECT v.id, v.title, v.category, v.tags,
+    SELECT v.id, v.file_id, v.title, v.category, v.tags,
            m.stashdb_scene_id, m.stashdb_title,
            m.stashdb_performer, m.stashdb_studio,
            v.source_chat_id, v.source_message_id
@@ -339,10 +372,12 @@ async def _fetch_teaser_source(video: dict) -> tuple[Optional[bytes], str]:
     scene_id = video.get("stashdb_scene_id")
     if scene_id:
         image = await asyncio.to_thread(fetch_scene_image, scene_id)
-        if image:
+        if image and await asyncio.to_thread(_valid_source_bytes, image):
             return image, "stashdb"
+        if image:
+            log.warning('poster: StashDB source was not a usable image for video %s', video.get('id'))
     image = await fetch_telegram_thumb(video)
-    if image:
+    if image and await asyncio.to_thread(_valid_source_bytes, image):
         return image, "telegram"
     return None, "none"
 
@@ -433,6 +468,7 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
     blurred = b""
     source = "none"
     tried_ids: set[int] = set()
+    sources_found = 0
     for _ in range(6):
         candidate = _select_video()
         if not candidate:
@@ -446,6 +482,7 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
         if not img_data:
             log.warning("poster: video %s has no usable image source; trying another", candidate_id)
             continue
+        sources_found += 1
         from nodick.services.thumbnail_safety import create_censored_thumbnail
         blurred = await create_censored_thumbnail(img_data)
         if not blurred:
@@ -456,7 +493,7 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
 
     if not video or not blurred:
         log.error("Auto-post aborted: no real thumbnail found after %s candidate(s)", len(tried_ids))
-        status = "no_thumbnail" if tried_ids else "no_videos"
+        status = 'no_render' if sources_found else ('no_source' if tried_ids else 'no_videos')
         record_post_result(status, status)
         return 0
 

@@ -51,17 +51,18 @@ def consume(update, context):
 
 def test_default_keyboard_grid_and_entry(store):
     rows = keyboards.thumbnail_keyboard().inline_keyboard
-    assert [len(row) for row in rows] == [2, 2, 3, 2, 1]
+    assert [len(row) for row in rows] == [2, 2, 1, 3, 1, 2, 2, 1]
     selected = [b.callback_data for row in rows for b in row if b.text.startswith("✅")]
-    assert selected == ["thumbnail_style_pixelation", "thumbnail_strength_medium"]
+    assert selected == ["thumbnail_style_pixelation", "thumbnail_strength_medium", "thumbnail_fallback_full_blur"]
     assert rows[-1][0].callback_data == "settings"
     assert any(b.callback_data == "thumbnail_menu" and "Thumbnail Style" in b.text
                for row in keyboards.settings_keyboard().inline_keyboard for b in row)
     assert all(len(b.callback_data.encode()) <= 64 for row in rows for b in row)
 
 
-@pytest.mark.parametrize("kind,value", [("style", v) for v in ("pixelation", "blur", "solid", "overlay")]
-                         + [("strength", v) for v in ("low", "medium", "high")])
+@pytest.mark.parametrize("kind,value", [("style", v) for v in ("pixelation", "blur", "solid", "overlay", "full_blur")]
+                         + [("strength", v) for v in ("low", "medium", "high")]
+                         + [("fallback", v) for v in ("full_blur", "neutral", "skip")])
 def test_settings_save_immediately_and_mark_selected(store, kind, value):
     store["thumbnail_overlay_png"] = base64.b64encode(png()).decode()
     update, context = callback(f"thumbnail_{kind}_{value}", {"unrelated": 42, "waiting_for_search": True})
@@ -74,7 +75,8 @@ def test_settings_save_immediately_and_mark_selected(store, kind, value):
 
 
 @pytest.mark.parametrize("action", ["thumbnail_menu", "thumbnail_upload", "thumbnail_clear",
-                                    "thumbnail_style_overlay", "thumbnail_strength_high"])
+                                    "thumbnail_style_overlay", "thumbnail_strength_high", "thumbnail_style_full_blur",
+                                    "thumbnail_fallback_full_blur", "thumbnail_fallback_neutral", "thumbnail_fallback_skip"])
 def test_callback_admin_gate(store, monkeypatch, action):
     monkeypatch.setattr(app, "_is_admin", lambda _: False)
     update, context = callback(action, {"unrelated": 9})
@@ -181,7 +183,7 @@ def test_unrelated_input_is_not_claimed_or_changed(store, state):
     assert store == {}
 
 
-@pytest.mark.parametrize("style,expected", [("overlay", "pixelation"), ("blur", "blur")])
+@pytest.mark.parametrize("style,expected", [("overlay", "pixelation"), ("blur", "blur"), ("full_blur", "full_blur")])
 def test_clear_overlay_and_back_to_settings(store, style, expected):
     store.update(thumbnail_overlay_png="old", thumbnail_style=style)
     update, context = callback("thumbnail_clear", {"waiting_for_setting": "thumbnail_overlay", "keep": True})
@@ -203,7 +205,9 @@ def test_cancel_aborts_upload_without_changing_saved_png(store, monkeypatch):
     assert store == {"thumbnail_overlay_png": "previous"}
 
 
-@pytest.mark.parametrize("action", ["thumbnail_style_blur", "thumbnail_strength_high", "thumbnail_clear"])
+@pytest.mark.parametrize("action", ["thumbnail_style_blur", "thumbnail_strength_high", "thumbnail_clear",
+                                    "thumbnail_style_full_blur", "thumbnail_fallback_full_blur",
+                                    "thumbnail_fallback_neutral", "thumbnail_fallback_skip"])
 def test_failed_readback_never_reports_success(store, monkeypatch, action):
     monkeypatch.setattr(app, "set_bot_setting", lambda *_: None)
     asyncio.run(app.thumbnail_settings(*callback(action)))
@@ -240,8 +244,15 @@ def test_actual_registration_order_and_filter_boundaries(store, monkeypatch):
     assert cb_index < catch_index
     cb = handlers[cb_index][1]
     assert isinstance(cb, CallbackQueryHandler)
-    for action in ("thumbnail_style_unknown", "thumbnail_strength_low_extra", "thumbnail_menu\n"):
+    for action in ("thumbnail_style_unknown", "thumbnail_strength_low_extra", "thumbnail_menu\n",
+                   "thumbnail_fallback_unknown", "thumbnail_fallback_full_blur_extra",
+                   "thumbnail_fallback_skip\n", "thumbnail_style_full_blur_extra"):
         assert not cb.pattern.match(action)
+    for row in keyboards.thumbnail_keyboard().inline_keyboard:
+        for button in row:
+            if button.callback_data != "settings":
+                assert cb.pattern.fullmatch(button.callback_data)
+            assert len(button.callback_data.encode("utf-8")) <= 64
     for chat_type, text, entities, expected in [
         ("private", "upload", [], True), ("group", "upload", [], False),
         ("private", "/cancel", [{"type": "bot_command", "offset": 0, "length": 7}], False),
@@ -295,6 +306,74 @@ def test_unauthorized_document_never_downloaded(store, monkeypatch):
     update.message.document.get_file.assert_not_awaited()
     file.download_as_bytearray.assert_not_awaited()
     assert not store
+
+
+@pytest.mark.parametrize("action", [
+    "thumbnail_fallback_", "thumbnail_fallback_unknown", "thumbnail_fallback_blur",
+    "thumbnail_fallback_full_blur_extra", "thumbnail_fallback_skip\n",
+    "thumbnail_style_full_blur_extra", "thumbnail_style_neutral", "thumbnail_strength_unknown",
+])
+def test_invalid_callback_never_writes_or_changes_state(store, monkeypatch, action):
+    writer = Mock()
+    monkeypatch.setattr(app, "set_bot_setting", writer)
+    update, context = callback(action, {"keep": True})
+    asyncio.run(app.thumbnail_settings(update, context))
+    writer.assert_not_called()
+    assert not store
+    assert context.user_data == {"keep": True}
+    app._replace_with_text.assert_not_awaited()
+
+
+@pytest.mark.parametrize("value,label", [(None, "Full Blur"), ("", "Full Blur"),
+                                        ("invalid", "Card"), ("full_blur", "Full Blur"),
+                                        ("neutral", "Card"), ("skip", "Skip")])
+def test_current_fallback_caption_and_checkmark(store, value, label):
+    store["thumbnail_fallback"] = value
+    asyncio.run(app.thumbnail_settings(*callback("thumbnail_menu")))
+    caption = app._replace_with_text.await_args.args[2]
+    assert f"Fallback: {label}." in caption
+    assert "detection fails or finds no regions" in caption
+    assert "source image exists" in caption
+    assert "without detection" in caption
+    selected = [b.text for row in keyboards.thumbnail_keyboard().inline_keyboard
+                for b in row if b.callback_data.startswith("thumbnail_fallback_") and b.text.startswith("✅")]
+    assert selected == [f"✅ Fallback: {label}"]
+    assert store == {"thumbnail_fallback": value}
+
+
+@pytest.mark.parametrize("fallback", ["full_blur", "neutral", "skip"])
+def test_new_controls_persist_across_process_restart(tmp_path, fallback):
+    result = _run_db_script(tmp_path, f'''
+import asyncio
+import json
+from types import SimpleNamespace as NS
+from unittest.mock import AsyncMock
+from nodick import db
+from nodick.telegram import app
+
+db.init_db()
+initial = db.get_bot_setting('thumbnail_fallback', 'full_blur')
+app._is_admin = lambda _: True
+app._replace_with_text = AsyncMock()
+for action in ['thumbnail_style_full_blur', 'thumbnail_fallback_{fallback}']:
+    update = NS(callback_query=NS(data=action, answer=AsyncMock()))
+    asyncio.run(app.thumbnail_settings(update, NS(user_data={{}})))
+    assert '✅' in app._replace_with_text.await_args.args[2]
+print(json.dumps({{'initial': initial}}))
+''')
+    assert result == {"initial": "full_blur"}
+    saved = _run_db_script(tmp_path, '''
+import json
+from nodick import db
+from nodick.telegram import keyboards
+db.init_db()
+selected = [b.callback_data for row in keyboards.thumbnail_keyboard().inline_keyboard
+            for b in row if b.text.startswith('✅')]
+print(json.dumps({'style': db.get_bot_setting('thumbnail_style'),
+                  'fallback': db.get_bot_setting('thumbnail_fallback'), 'selected': selected}))
+''')
+    assert saved == {"style": "full_blur", "fallback": fallback, "selected": [
+        "thumbnail_style_full_blur", "thumbnail_strength_medium", f"thumbnail_fallback_{fallback}"]}
 
 
 def test_settings_storage_survives_restart(tmp_path):

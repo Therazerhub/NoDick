@@ -187,7 +187,7 @@ def test_stash_image_fetch_runs_off_event_loop(monkeypatch):
 
     def slow_fetch(_scene_id):
         time.sleep(0.08)
-        return b"image"
+        return _source_jpeg()
 
     monkeypatch.setattr(poster, "fetch_scene_image", slow_fetch)
 
@@ -202,7 +202,7 @@ def test_stash_image_fetch_runs_off_event_loop(monkeypatch):
 
     responsive, result = asyncio.run(exercise())
     assert responsive is True
-    assert result == (b"image", "stashdb")
+    assert result == (_source_jpeg(), "stashdb")
 
 
 def test_autoposter_selection_uses_one_exclusion_query(monkeypatch):

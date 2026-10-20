@@ -242,7 +242,10 @@ def settings_keyboard() -> InlineKeyboardMarkup:
 def thumbnail_keyboard() -> InlineKeyboardMarkup:
     style = get_bot_setting("thumbnail_style", "pixelation") or "pixelation"
     strength = get_bot_setting("thumbnail_strength", "medium") or "medium"
-    if style not in ("pixelation", "blur", "solid", "overlay"):
+    fallback = get_bot_setting("thumbnail_fallback", "full_blur") or "full_blur"
+    if fallback not in ("full_blur", "neutral", "skip"):
+        fallback = "neutral"
+    if style not in ("pixelation", "blur", "solid", "overlay", "full_blur"):
         style = "solid"
     if strength not in ("low", "medium", "high"):
         strength = "medium"
@@ -256,7 +259,11 @@ def thumbnail_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [button("pixelation", "Pixelation", style, "style"), button("blur", "Blur", style, "style")],
         [button("solid", "Solid", style, "style"), button("overlay", "Custom PNG", style, "style")],
+        [button("full_blur", "Full Image Blur", style, "style")],
         [button(value, value.title(), strength, "strength") for value in ("low", "medium", "high")],
+        [button("full_blur", "Fallback: Full Blur", fallback, "fallback")],
+        [button("neutral", "Fallback: Card", fallback, "fallback"),
+         button("skip", "Fallback: Skip", fallback, "fallback")],
         [InlineKeyboardButton("Upload PNG", callback_data="thumbnail_upload"),
          InlineKeyboardButton("Remove PNG", callback_data="thumbnail_clear")],
         [InlineKeyboardButton("🔙 Settings", callback_data="settings")],

@@ -48,14 +48,14 @@ def test_missing_corrupt_overlay_rejected(encoded):
 
 def test_configuration_defaults_and_validation(monkeypatch):
     monkeypatch.setattr(safety,'get_bot_setting',lambda key,default='':default)
-    assert safety.get_thumbnail_config()==('pixelation','medium','')
+    assert safety.get_thumbnail_config()==('pixelation','medium','','full_blur')
     monkeypatch.setattr(safety,'get_bot_setting',lambda key,default='':'invalid')
-    assert safety.get_thumbnail_config()==('solid','medium','')
+    assert safety.get_thumbnail_config()==('solid','medium','','neutral')
 
 
 def test_style_strength_overlay_invalidate_cache(monkeypatch):
     safety._cache.clear()
-    configuration=['pixelation','medium','']
+    configuration=['pixelation','medium','','full_blur']
     monkeypatch.setattr(safety,'get_thumbnail_config',lambda:tuple(configuration))
     detector=AsyncMock(return_value=DETECTIONS)
     monkeypatch.setattr(safety,'_detect',detector)
@@ -65,7 +65,7 @@ def test_style_strength_overlay_invalidate_cache(monkeypatch):
         configuration[0]='solid'
         second=await safety.create_censored_thumbnail(fixture_image())
         assert second!=first
-        configuration[:]=['overlay','medium',overlay(255)]
+        configuration[:]=['overlay','medium',overlay(255),'full_blur']
         third=await safety.create_censored_thumbnail(fixture_image())
         assert third!=second
         configuration[2]=overlay(0)
@@ -76,9 +76,9 @@ def test_style_strength_overlay_invalidate_cache(monkeypatch):
 
 def test_bad_overlay_and_settings_failure_use_neutral(monkeypatch):
     safety._cache.clear()
-    monkeypatch.setattr(safety,'get_thumbnail_config',lambda:('overlay','medium','invalid'))
+    monkeypatch.setattr(safety,'get_thumbnail_config',lambda:('overlay','medium','invalid','full_blur'))
     monkeypatch.setattr(safety,'_detect',AsyncMock(return_value=DETECTIONS))
-    assert asyncio.run(safety.create_censored_thumbnail(fixture_image()))==safety.neutral_thumbnail()
+    assert asyncio.run(safety.create_censored_thumbnail(fixture_image()))==safety.full_blur_thumbnail(fixture_image())
 
 
 def test_strength_changes_rendering():

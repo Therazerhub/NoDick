@@ -271,7 +271,7 @@ async def _send_welcome(update, context, text, markup):
 
 
 _THUMBNAIL_PNG_LIMIT = 512 * 1024
-THUMBNAIL_CALLBACK_PATTERN = r"^thumbnail_(?:menu|upload|clear|style_(?:pixelation|blur|solid|overlay)|strength_(?:low|medium|high))\Z"
+THUMBNAIL_CALLBACK_PATTERN = r"^thumbnail_(?:menu|upload|clear|style_(?:pixelation|blur|solid|overlay|full_blur)|strength_(?:low|medium|high)|fallback_(?:full_blur|neutral|skip))\Z"
 
 
 def _normalize_thumbnail_png(data: bytes) -> bytes:
@@ -342,8 +342,21 @@ async def thumbnail_settings(update, context):
         elif action.startswith("thumbnail_strength_"):
             _save_thumbnail_setting("thumbnail_strength", action.removeprefix("thumbnail_strength_"))
             notice = "✅ Thumbnail strength saved."
+        elif action.startswith("thumbnail_fallback_"):
+            _save_thumbnail_setting("thumbnail_fallback", action.removeprefix("thumbnail_fallback_"))
+            notice = "✅ Thumbnail fallback saved."
     except Exception:
         notice = "Could not save that setting. For Custom PNG, upload a valid PNG first."
+    fallback_labels = {"full_blur": "Full Blur", "neutral": "Card", "skip": "Skip"}
+    fallback = get_bot_setting("thumbnail_fallback", "full_blur") or "full_blur"
+    if fallback not in fallback_labels:
+        fallback = 'neutral'
+    notice += (
+        f"\n\nFallback: {fallback_labels[fallback]}. Used when detection fails or finds no regions "
+        "but a source image exists. Card uses a neutral preview; Skip skips the post. "
+        "Full Image Blur always blurs the whole source without detection. "
+        "Changes apply to new posts only."
+    )
     await _replace_with_text(update, context, notice, thumbnail_keyboard())
 
 

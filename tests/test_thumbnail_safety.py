@@ -29,8 +29,8 @@ def test_mask_is_opaque_and_padded():
 
 
 @pytest.mark.parametrize('detections', [[], [{'class':'FACE_FEMALE','score':.99,'box':[1,1,10,10]}], [{'class':'BUTTOCKS_EXPOSED','score':.1,'box':[1,1,10,10]}]])
-def test_no_qualified_sensitive_regions_use_neutral_card(detections):
-    assert safety.mask_regions(source(), detections) == safety.neutral_thumbnail()
+def test_no_qualified_sensitive_regions_use_full_blur(detections):
+    assert safety.mask_regions(source(), detections) == safety.full_blur_thumbnail(source())
 
 
 def test_malformed_box_rejected():
@@ -41,14 +41,14 @@ def test_malformed_box_rejected():
 def test_detector_failure_never_returns_source(monkeypatch):
     safety._cache.clear()
     monkeypatch.setattr(safety,'_detect', AsyncMock(side_effect=RuntimeError('failed')))
-    assert asyncio.run(safety.create_censored_thumbnail(source())) == safety.neutral_thumbnail()
+    assert asyncio.run(safety.create_censored_thumbnail(source())) == safety.full_blur_thumbnail(source())
 
 
 def test_invalid_image_never_reaches_detector(monkeypatch):
     safety._cache.clear()
     detector = AsyncMock()
     monkeypatch.setattr(safety, '_detect', detector)
-    assert asyncio.run(safety.create_censored_thumbnail(b'invalid')) == safety.neutral_thumbnail()
+    assert asyncio.run(safety.create_censored_thumbnail(b'invalid')) == b''
     detector.assert_not_called()
 
 

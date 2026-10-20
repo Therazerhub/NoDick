@@ -1,7 +1,7 @@
 """Conservative selective thumbnail masking with a short-lived CPU worker.
 
-Detection is imperfect: no detections are NOT evidence of safety. Use a
-source-free branded card on no sensitive detections, any error, or timeout.
+Detection is imperfect: no detections are NOT evidence of safety. Apply the
+configured full-image blur/card/skip fallback without ever returning raw input.
 """
 import asyncio
 import base64
@@ -14,7 +14,7 @@ import math
 import os
 import sys
 
-from PIL import Image, ImageDraw, ImageOps, ImageFilter
+from PIL import Image, ImageDraw, ImageOps, ImageFilter, ImageEnhance
 from nodick.db import get_bot_setting
 
 log = logging.getLogger(__name__)
@@ -52,15 +52,51 @@ def prepare_image(raw):
     return out.getvalue()
 
 
+def full_blur_thumbnail(raw, strength='medium'):
+    """Legacy-style whole-image blur: cover-fit first, then blur/tint.
+
+    Requires real, valid source pixels. The medium effect matches the former
+    960x540/radius-22 teaser; never substitutes or returns uncensored input.
+    """
+    prepared = prepare_image(raw)
+    with Image.open(io.BytesIO(prepared)) as source:
+        image = ImageOps.fit(source.convert('RGB'), (960, 540), method=Image.Resampling.LANCZOS)
+    radius = {'low': 18, 'medium': 22, 'high': 35}.get(strength, 22)
+    image = image.filter(ImageFilter.GaussianBlur(radius))
+    image = ImageEnhance.Brightness(image).enhance(.68)
+    image = Image.blend(image, Image.new('RGB', image.size, (15, 6, 24)), .10)
+    out = io.BytesIO()
+    image.save(out, format='JPEG', quality=86, optimize=True)
+    return out.getvalue()
+
+
+def fallback_thumbnail(raw, fallback='full_blur', strength='medium'):
+    if fallback == 'neutral':
+        return neutral_thumbnail()
+    if fallback == 'skip':
+        return b''
+    if fallback != 'full_blur':
+        raise ValueError('Invalid fallback policy')
+    try:
+        return full_blur_thumbnail(raw, strength)
+    except Exception:
+        # Invalid/missing bytes cannot be blurred. Skip, never send raw data.
+        log.warning('No decodable original image for full-blur fallback; skipping thumbnail')
+        return b''
+
+
 def get_thumbnail_config():
     style = get_bot_setting('thumbnail_style', 'pixelation') or 'pixelation'
     strength = get_bot_setting('thumbnail_strength', 'medium') or 'medium'
-    if style not in {'pixelation', 'blur', 'solid', 'overlay'}:
+    if style not in {'pixelation', 'blur', 'solid', 'overlay', 'full_blur'}:
         style = 'solid'
     if strength not in {'low', 'medium', 'high'}:
         strength = 'medium'
     overlay = (get_bot_setting('thumbnail_overlay_png', '') or '') if style == 'overlay' else ''
-    return style, strength, overlay
+    fallback = get_bot_setting('thumbnail_fallback', 'full_blur') or 'full_blur'
+    if fallback not in {'full_blur', 'neutral', 'skip'}:
+        fallback = 'neutral'
+    return style, strength, overlay, fallback
 
 
 def decode_overlay(encoded):
@@ -75,7 +111,9 @@ def decode_overlay(encoded):
         return source.convert('RGBA')
 
 
-def mask_regions(raw, detections, style='pixelation', strength='medium', overlay_png=''):
+def mask_regions(raw, detections, style='pixelation', strength='medium', overlay_png='', fallback='full_blur'):
+    if style == 'full_blur':
+        return full_blur_thumbnail(raw, strength)
     with Image.open(io.BytesIO(raw)) as source:
         image = source.convert('RGB')
     original = image.copy()
@@ -121,7 +159,8 @@ def mask_regions(raw, detections, style='pixelation', strength='medium', overlay
         image.paste(region, box[:2])
         masked += 1
     if not masked:
-        return neutral_thumbnail()
+        log.info('No qualifying sensitive regions; applying thumbnail fallback=%s', fallback)
+        return fallback_thumbnail(raw, fallback, strength)
     image = ImageOps.fit(image, (960, 540), method=Image.Resampling.LANCZOS)
     out = io.BytesIO()
     image.save(out, format='JPEG', quality=86)
@@ -155,8 +194,8 @@ async def create_censored_thumbnail(raw):
     try:
         config = await asyncio.to_thread(get_thumbnail_config)
     except Exception:
-        log.exception('Thumbnail settings unavailable; using neutral card')
-        return await asyncio.to_thread(neutral_thumbnail)
+        log.warning('Thumbnail settings unavailable; skipping rather than assuming a fallback policy')
+        return b''
     # Style, strength and overlay content all participate: old rendered images
     # must never survive an admin's configuration change.
     key = hashlib.sha256(raw + json.dumps(config).encode()).hexdigest()
@@ -164,13 +203,15 @@ async def create_censored_thumbnail(raw):
         if key in _cache:
             _cache.move_to_end(key)
             return _cache[key]
+        prepared = None
         try:
             prepared = await asyncio.to_thread(prepare_image, raw)
-            detections = await _detect(prepared)
+            # Full-image blur is deterministic Pillow work; do not load NudeNet.
+            detections = [] if config[0] == 'full_blur' else await _detect(prepared)
             result = await asyncio.to_thread(mask_regions, prepared, detections, *config)
         except Exception:
-            log.exception('Selective thumbnail unavailable; using source-free neutral card')
-            return await asyncio.to_thread(neutral_thumbnail)
+            log.warning('Selective thumbnail unavailable; applying fallback=%s', config[3])
+            result = await asyncio.to_thread(fallback_thumbnail, prepared or raw, config[3], config[1])
         _cache[key] = result
         while len(_cache) > 8:
             _cache.popitem(last=False)
