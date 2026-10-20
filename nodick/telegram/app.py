@@ -445,6 +445,9 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 update, context, video_id, allow_redirect=False
             )
             return
+        if pending_action in {"premium", "how_to_watch"}:
+            await _show_autopost_action(update, context, pending_action)
+            return
         if pending_action == "random":
             limit = get_user_size_limit(user_id)
             row = db_random(limit)
@@ -979,6 +982,22 @@ async def _deliver_with_quota(
 # ── Command: /start ────────────────────────────────────────────────────────
 
 
+async def _show_autopost_action(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str):
+    """Handle explicit channel CTA destinations after the membership gate."""
+    if action == "premium":
+        return await get_premium_callback(update, context)
+    text = (
+        "How to Watch\n\n"
+        "1. Tap Open Video on the channel post, then tap Start if Telegram asks.\n"
+        "2. If a join check appears, join the listed channels and tap I have Joined.\n"
+        "3. The requested video will be sent here, subject to your available quota.\n\n"
+        "You can also browse the main menu or use /random."
+    )
+    if update.callback_query:
+        return await _replace_with_text(update, context, text, back())
+    return await update.message.reply_text(text, reply_markup=back())
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     start_payload = context.args[0] if context.args else None
@@ -1003,6 +1022,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name_str = " ".join(full_name) or "Unknown"
             await _log_event(context, f"👤 *New User*\nID: `{user.id}`\nUsername: {username}\nName: {name_str}")
             
+    if start_payload in {"premium", "how_to_watch"}:
+        if await _check_force_join(update, context, pending_action=start_payload):
+            return
+        await _show_autopost_action(update, context, start_payload)
+        return
+
     if start_video_id is not None:
         if await _check_force_join(
             update, context, pending_action=f"video:{start_video_id}"

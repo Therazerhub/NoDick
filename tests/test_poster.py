@@ -104,7 +104,13 @@ def test_telegram_thumbnail_downloads_largest_preview_from_message(monkeypatch):
     }
 
 
-def test_autoposter_sends_only_real_blurred_thumbnail(monkeypatch):
+def test_autoposter_sends_only_censored_thumbnail(monkeypatch):
+    from unittest.mock import AsyncMock
+    from nodick.services import thumbnail_safety
+    monkeypatch.setattr(thumbnail_safety, "_detect", AsyncMock(return_value=[
+        {"class": "BUTTOCKS_EXPOSED", "score": 0.9, "box": [50, 50, 20, 20]}
+    ]))
+    thumbnail_safety._cache.clear()
     source = _source_jpeg()
     video = {
         "id": 42,
@@ -142,7 +148,7 @@ def test_autoposter_sends_only_real_blurred_thumbnail(monkeypatch):
     image = Image.open(io.BytesIO(sent[0]["photo"]))
     assert image.size == (960, 540)
     assert sum(ImageStat.Stat(image).stddev) / 3 > 8
-    assert "start=vid_42" in sent[0]["reply_markup"].inline_keyboard[0][0].url
+    assert "start=vid_42" in sent[0]["reply_markup"].inline_keyboard[-1][0].url
 
 
 def test_autoposter_aborts_instead_of_sending_gray_placeholder(monkeypatch):

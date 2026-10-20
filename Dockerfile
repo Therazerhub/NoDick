@@ -9,6 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev && rm
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Bound native inference threads on small Render instances.
+ENV OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+
 # Copy project
 COPY . .
 

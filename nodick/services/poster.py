@@ -1,5 +1,8 @@
 import asyncio
 import io
+import html
+import re
+from urllib.parse import quote
 import json
 import logging
 import random
@@ -265,6 +268,63 @@ async def _fetch_teaser_source(video: dict) -> tuple[Optional[bytes], str]:
     return None, "none"
 
 
+# ── Draft 1 caption ──────────────────────────────────────────────────────────
+
+def _caption_field(value, limit: int) -> str:
+    """Omit import placeholders; bound plain text before HTML escaping.
+
+    Limits are UTF-16 code units, including the truncation ellipsis. Splitting
+    by Python characters avoids cutting a non-BMP character in half.
+    """
+    text = " ".join(str(value or "").split())
+    if text.casefold() in {"", "unknown", "none", "null", "n/a", "na", "not set", "-", "?", "exclusive video", "vault"}:
+        return ""
+    if re.fullmatch(r"(?:video|file|untitled)(?:[\s_\-]*\d+)?|\d+", text, re.I):
+        return ""
+    if len(text.encode("utf-16-le")) // 2 <= limit:
+        return text
+    result = []
+    remaining = limit - 1
+    for char in text:
+        size = len(char.encode("utf-16-le")) // 2
+        if size > remaining:
+            break
+        result.append(char)
+        remaining -= size
+    return "".join(result).rstrip() + "…"
+
+
+def build_auto_post_caption(video: dict, bot_username: str) -> str:
+    """Render only persisted metadata, with a bounded, balanced HTML caption.
+
+    There is no reliable description column in video_metadata, so Draft 1's
+    optional description is intentionally omitted (no generated synopsis).
+    Field budgets plus labels/footer stay below 1024 parsed UTF-16 units.
+    """
+    title = _caption_field(video.get("stashdb_title"), 280) or _caption_field(video.get("title"), 280)
+    performer = _caption_field(video.get("stashdb_performer"), 180)
+    studio = _caption_field(video.get("stashdb_studio"), 120)
+    category = _caption_field(video.get("category"), 96)
+    username = _caption_field(bot_username, 64)
+    sections = [f"<b>{html.escape(title)}</b>"] if title else []
+    lines = []
+    for label, value in (("Featuring", performer), ("Studio", studio), ("Category", category)):
+        if value:
+            lines.append(f"➜ {label}: <b>{html.escape(value)}</b>")
+    if lines:
+        sections.append("\n".join(lines))
+    # Punctuation is removed, word separators become underscores; don't
+    # manufacture a hashtag when the category has no usable characters.
+    hashtag = re.sub(r"[^\w\s-]", "", category, flags=re.UNICODE)
+    hashtag = re.sub(r"[\s-]+", "_", hashtag).strip("_")
+    if hashtag and hashtag[0].isdigit():
+        hashtag = "category_" + hashtag
+    footer = ([f"#{html.escape(hashtag)}"] if hashtag else [])
+    footer.append(f"Open the complete video in @{html.escape(username)}.")
+    sections.append("<blockquote>" + "\n".join(footer) + "</blockquote>")
+    return "\n\n".join(sections)
+
+
 # ── Main poster ──────────────────────────────────────────────────────────────
 
 async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = False) -> int:
@@ -305,7 +365,8 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
         if not img_data:
             log.warning("poster: video %s has no usable image source; trying another", candidate_id)
             continue
-        blurred = await asyncio.to_thread(create_blurred_thumbnail, img_data)
+        from nodick.services.thumbnail_safety import create_censored_thumbnail
+        blurred = await create_censored_thumbnail(img_data)
         if not blurred:
             log.warning("poster: video %s image could not be rendered; trying another", candidate_id)
             continue
@@ -317,23 +378,18 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
         return 0
 
     vid_id = video["id"]
-    title = video.get("stashdb_title") or video.get("title") or "Exclusive Video"
-    performer = video.get("stashdb_performer") or "Unknown"
-    category = video.get("category") or "Vault"
     log.info("poster: using %s thumbnail for video %s", source, vid_id)
 
-    caption = (
-        f"🎬 **{title}**\n\n"
-        f"👤 {performer}\n"
-        f"🏷 #{category.replace(' ', '')}\n\n"
-        f"❤️ *[ Content Hidden ]*\n\n"
-        f"👇 *Tap below to instantly unlock the full uncensored video.*"
-    )
-
     bot_info = await bot.get_me()
-    deep_link = f"https://t.me/{bot_info.username}?start=vid_{vid_id}"
+    if not bot_info.username:
+        log.error("Auto-post aborted: bot has no username for deep links")
+        return 0
+    caption = build_auto_post_caption(video, bot_info.username)
+    bot_url = f"https://t.me/{quote(bot_info.username, safe='')}"
     markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔓 Watch in Bot", url=deep_link)]
+        [InlineKeyboardButton("Premium", url=f"{bot_url}?start=premium"),
+         InlineKeyboardButton("How to Watch", url=f"{bot_url}?start=how_to_watch")],
+        [InlineKeyboardButton("Open Video", url=f"{bot_url}?start=vid_{vid_id}")],
     ])
 
     successes = 0
@@ -343,7 +399,7 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
                 chat_id=ch["id"],
                 photo=blurred,
                 caption=caption,
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=markup,
             )
             successes += 1

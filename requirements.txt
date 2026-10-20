@@ -6,4 +6,6 @@ rapidfuzz>=3.0.0
 jellyfish>=0.11.0
 psycopg2-binary>=2.9.0
 pytest>=8.0.0
-Pillow>=10.0.0
+Pillow>=10.1.0
+# Small bundled CPU detector; pinned because worker config targets this API.
+nudenet==3.4.2
