@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
@@ -31,7 +32,10 @@ def test_invalid_urls(text):
 
 
 def test_default_and_clear():
-    assert decode_banner(DEFAULT_WELCOME_MEDIA) == dict(type='photo', media='https://files.catbox.moe/j9r0xf.jpg')
+    assert decode_banner(DEFAULT_WELCOME_MEDIA) == dict(type='photo', media=str(Path(__file__).resolve().parents[1] / 'assets' / 'welcome-noir.jpg'))
+    from PIL import Image
+    with Image.open(decode_banner(DEFAULT_WELCOME_MEDIA)['media']) as image:
+        image.verify()
     assert banner_from_message(NS(text='clear')) is None
     assert decode_banner('') is None
 
@@ -122,6 +126,6 @@ db.set_bot_setting('welcome_media','')
 db.init_db()
 print(json.dumps({'initial':json.loads(initial), 'saved':json.loads(saved), 'cleared': db.get_bot_setting('welcome_media',DEFAULT_WELCOME_MEDIA)}))
 ''')
-    assert result['initial']['media'] == 'https://files.catbox.moe/j9r0xf.jpg'
+    assert result['initial']['media'] == str(Path(__file__).resolve().parents[1] / 'assets' / 'welcome-noir.jpg')
     assert result['saved']['media'] == 'file-id'
     assert result['cleared'] == ''

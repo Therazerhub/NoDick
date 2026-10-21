@@ -47,7 +47,7 @@ def pass_keyboard(url=None):
 def upsell_keyboard():
     rows = []
     if available():
-        rows.append([Button("🎁 Get 1-Day Premium", callback_data="sponsor_pass")])
+        rows.append([Button("🎁 Get Full Access", callback_data="sponsor_pass")])
     rows.append([Button("🔙 Back", callback_data="menu")])
     return Markup(rows)
 
@@ -90,7 +90,7 @@ async def show_pass(update, context):
     if status == "active":
         text, url = _active_text(result), None
     elif status == "ready":
-        text = ("🎁 Get 1-Day Premium\n\nOpen the sponsor link and follow its steps, then return to this bot using the final button.\n\n"
+        text = ("🎁 Get Full Access\n\nOpen the sponsor link and follow its steps, then return to this bot using the final button.\n\n"
                 "This link is valid for up to 30 minutes after creation. Your 24 hours of Premium begin only when you activate the pass after returning.")
         url = result["shortened_url"]
     elif status == "disabled":

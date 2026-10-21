@@ -170,6 +170,39 @@ def redeem_pass(user_id: int, token: str) -> dict:
         return {"status": "activated", "premium_until": until}
 
 
+def grant_referral_day_locked(cur, ph: str, user_id: int, now: int) -> dict:
+    """Grant one non-stacking referral day inside the caller's user-row transaction.
+
+    Result: status 'granted' with premium_until, 'paid' or 'active'.
+    Paid/lifetime columns are never modified. Caller must hold inviter row lock.
+    """
+    cur.execute(f"SELECT is_premium, premium_until FROM user_settings WHERE user_id = {ph}", (user_id,))
+    row = cur.fetchone()
+    if row is None:
+        raise ValueError('missing referrer')
+    from datetime import datetime, timezone
+    until = row[1]
+    if row[0]:
+        if until is None:
+            return {'status': 'paid'}
+        if isinstance(until, str):
+            try:
+                until = datetime.fromisoformat(until.replace('Z', '+00:00'))
+            except ValueError:
+                return {'status': 'paid'}
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        if until.timestamp() > now:
+            return {'status': 'paid'}
+    active = _until(cur, ph, user_id, now)
+    if active:
+        return {'status': 'active', 'premium_until': active}
+    deadline = now + PASS_SECONDS
+    cur.execute(f"INSERT INTO premium_pass_entitlements (user_id, premium_until) VALUES ({ph}, {ph}) "
+                "ON CONFLICT (user_id) DO UPDATE SET premium_until = excluded.premium_until", (user_id, deadline))
+    return {'status': 'granted', 'premium_until': deadline}
+
+
 def revoke_pass(user_id: int) -> None:
     """Revoke entitlement and pending returns so revocation cannot be bypassed."""
     with _locked_user(user_id) as (cur, ph):

@@ -140,6 +140,45 @@ def init_db() -> None:
         _init_sqlite()
     from .premium_passes import init_schema
     init_schema()
+    init_trial_schema()
+
+
+def init_trial_schema() -> None:
+    """Seed legacy users once, conservatively excluding all pre-existing accounts.
+
+    Historical quota resets can erase watch counts; growth events were added later.
+    Thus absence of evidence cannot prove an old account never watched.
+    """
+    if _using_pg:
+        conn = _new_pg_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""CREATE TABLE IF NOT EXISTS video_trials (
+                    user_id BIGINT PRIMARY KEY, delivered INTEGER NOT NULL DEFAULT 0,
+                    ineligible INTEGER NOT NULL DEFAULT 0)""")
+                cur.execute("""CREATE TABLE IF NOT EXISTS video_trial_reservations (
+                    token TEXT PRIMARY KEY, user_id BIGINT NOT NULL,
+                    created_at BIGINT NOT NULL)""")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_trial_reservations_user ON video_trial_reservations(user_id)")
+                cur.execute("SELECT value FROM bot_settings WHERE key = %s FOR UPDATE", ("video_trial_seeded_v1",))
+                if cur.fetchone() is None:
+                    cur.execute("INSERT INTO video_trials (user_id, ineligible) SELECT user_id, 1 FROM user_settings ON CONFLICT (user_id) DO NOTHING")
+                    cur.execute("INSERT INTO bot_settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", ("video_trial_seeded_v1", "1"))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("CREATE TABLE IF NOT EXISTS video_trials (user_id INTEGER PRIMARY KEY, delivered INTEGER NOT NULL DEFAULT 0, ineligible INTEGER NOT NULL DEFAULT 0)")
+            conn.execute("CREATE TABLE IF NOT EXISTS video_trial_reservations (token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at INTEGER NOT NULL)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trial_reservations_user ON video_trial_reservations(user_id)")
+            if conn.execute("SELECT value FROM bot_settings WHERE key = ?", ("video_trial_seeded_v1",)).fetchone() is None:
+                conn.execute("INSERT OR IGNORE INTO video_trials (user_id, ineligible) SELECT user_id, 1 FROM user_settings")
+                conn.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES (?, ?)", ("video_trial_seeded_v1", "1"))
 
 
 def _init_pg():
@@ -1437,6 +1476,82 @@ def refund_quota(user_id: int) -> None:
     )
 
 
+def reserve_video_trial(user_id: int) -> dict:
+    """Reserve one of three lifetime delivered-video trials before sending.
+
+    Returns {'status': 'reserved', 'token': str, 'remaining': int} or
+    {'status': 'exhausted', 'remaining': 0}. Commit only after Telegram confirms
+    delivery; release on send failure. One outstanding reservation per user.
+    """
+    import secrets
+    import time
+    from .premium_passes import _locked_user
+    with _locked_user(user_id) as (cur, ph):
+        cur.execute(f"SELECT delivered, ineligible FROM video_trials WHERE user_id = {ph}", (user_id,))
+        row = cur.fetchone()
+        if row is None:
+            # A pre-migration user is seeded as ineligible by init_trial_schema.
+            # Also fail closed for users whose historical activity preceded this
+            # first reservation (including growth writes or a quota rollover).
+            cur.execute(f"SELECT quota_used, welcome_converted, streak_count FROM user_settings WHERE user_id = {ph}", (user_id,))
+            user = cur.fetchone()
+            cur.execute(f"SELECT 1 FROM growth_events WHERE user_id = {ph} AND event_type IN ('first_delivery', 'delivery') LIMIT 1", (user_id,))
+            evidence = cur.fetchone() is not None
+            ineligible = int(evidence or (user and (int(user[0] or 0) > 0 or int(user[1] or 0) > 0 or int(user[2] or 0) > 0)))
+            cur.execute(f"INSERT INTO video_trials (user_id, delivered, ineligible) VALUES ({ph}, 0, {ph}) ON CONFLICT (user_id) DO NOTHING", (user_id, ineligible))
+            delivered = 0
+        else:
+            delivered, ineligible = int(row[0]), int(row[1])
+        import time
+        now = int(time.time())
+        # A process may restart after reserving but before Telegram confirms
+        # delivery. Stale locks must not strand the user's remaining trials.
+        cur.execute(f"DELETE FROM video_trial_reservations WHERE user_id = {ph} AND created_at < {ph}",
+                    (user_id, now - 3600))
+        cur.execute(f"SELECT 1 FROM video_trial_reservations WHERE user_id = {ph} LIMIT 1", (user_id,))
+        if ineligible or delivered >= 3 or cur.fetchone():
+            return {'status': 'exhausted', 'remaining': 0}
+        token = secrets.token_urlsafe(24)
+        cur.execute(f"INSERT INTO video_trial_reservations (token, user_id, created_at) VALUES ({ph}, {ph}, {ph})", (token, user_id, now))
+        return {'status': 'reserved', 'token': token, 'remaining': 2 - delivered}
+
+
+def finish_video_trial(user_id: int, token: str, delivered: bool) -> dict:
+    """Idempotently finalize a reserved send; only matching owner/token counts.
+
+    Returns {'status': 'delivered'|'released'|'invalid', 'remaining': int}
+    (invalid omits remaining). Never refund after Telegram confirmed delivery.
+    """
+    from .premium_passes import _locked_user
+    with _locked_user(user_id) as (cur, ph):
+        cur.execute(f"DELETE FROM video_trial_reservations WHERE user_id = {ph} AND token = {ph}", (user_id, token))
+        if cur.rowcount != 1:
+            return {'status': 'invalid'}
+        if delivered:
+            cur.execute(f"UPDATE video_trials SET delivered = delivered + 1 WHERE user_id = {ph}", (user_id,))
+        cur.execute(f"SELECT delivered FROM video_trials WHERE user_id = {ph}", (user_id,))
+        return {'status': 'delivered' if delivered else 'released', 'remaining': max(0, 3 - int(cur.fetchone()[0]))}
+
+
+def get_total_deliveries(user_id: int) -> int:
+    """Historical successful sends; unlike daily quota this never resets."""
+    ph = '%s' if _using_pg else '?'
+    row = _fetchone(
+        f"SELECT COUNT(*) AS cnt FROM growth_events WHERE user_id = {ph} AND event_type = 'delivery'",
+        (user_id,),
+    )
+    return int(row['cnt'] or 0) if row else 0
+
+
+def video_trial_status(user_id: int) -> dict:
+    """Non-mutating UI snapshot; unknown users may have three trials."""
+    ph = '%s' if _using_pg else '?'
+    row = _fetchone(f"SELECT delivered, ineligible FROM video_trials WHERE user_id = {ph}", (user_id,))
+    if row:
+        return {'remaining': 0 if row['ineligible'] else max(0, 3 - int(row['delivered']))}
+    return {'remaining': 3 if not user_exists(user_id) else 0}
+
+
 def grant_premium(user_id: int, days: int | None = None) -> None:
     ensure_user_exists(user_id)
     ph = "%s" if _using_pg else "?"
@@ -1511,6 +1626,15 @@ def activate_pending_referral(referred_id: int, bonus: int = 10) -> dict | None:
             referrer_id = (row[0] if pg else row["pending_referrer_id"]) if row else None
             if not referrer_id or referrer_id == referred_id:
                 return None
+            # Referral credit requires the invitee's first confirmed delivery.
+            # The public helper must not be callable as a free access mint.
+            cur.execute(
+                "SELECT 1 FROM growth_events WHERE user_id = %s AND event_type = 'first_delivery' LIMIT 1" if pg else
+                "SELECT 1 FROM growth_events WHERE user_id = ? AND event_type = 'first_delivery' LIMIT 1",
+                (referred_id,),
+            )
+            if cur.fetchone() is None:
+                return None
 
             cur.execute(
                 ("SELECT user_id FROM user_settings WHERE user_id = %s" if pg else
@@ -1557,32 +1681,17 @@ def activate_pending_referral(referred_id: int, bonus: int = 10) -> dict | None:
                 (referrer_id,),
             )
             count = int(cur.fetchone()[0])
-            premium_awarded = count % 10 == 0
-            if premium_awarded:
-                if pg:
-                    cur.execute(
-                        "UPDATE user_settings SET is_premium = 1, premium_until = "
-                        "CASE WHEN is_premium = 1 AND premium_until IS NULL THEN NULL "
-                        "WHEN is_premium = 1 AND premium_until > CURRENT_TIMESTAMP "
-                        "THEN premium_until + INTERVAL '30 days' "
-                        "ELSE CURRENT_TIMESTAMP + INTERVAL '30 days' END WHERE user_id = %s",
-                        (referrer_id,),
-                    )
-                else:
-                    cur.execute(
-                        "UPDATE user_settings SET is_premium = 1, premium_until = "
-                        "CASE WHEN is_premium = 1 AND premium_until IS NULL THEN NULL "
-                        "WHEN is_premium = 1 AND premium_until > CURRENT_TIMESTAMP "
-                        "THEN datetime(premium_until, '+30 days') "
-                        "ELSE datetime('now', '+30 days') END WHERE user_id = ?",
-                        (referrer_id,),
-                    )
+            import time
+            from .premium_passes import grant_referral_day_locked
+            reward = grant_referral_day_locked(cur, '%s' if pg else '?', referrer_id, int(time.time()))
             return {
                 "referrer_id": int(referrer_id),
                 "referred_id": referred_id,
                 "bonus": bonus,
                 "count": count,
-                "premium_awarded": premium_awarded,
+                "premium_awarded": reward['status'] == 'granted',
+                "premium_until": reward.get('premium_until'),
+                "premium_status": reward['status'],
             }
         finally:
             cur.close()

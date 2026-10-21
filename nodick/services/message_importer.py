@@ -195,14 +195,15 @@ class MessageIDImporter:
 
                 # Fetch batch silently
                 messages = await _batch_fetch(client, channel_id, id_range)
+                # get_messages(ids=...) can return None placeholders for deleted
+                # IDs. Count only actual messages, never a None twice.
                 found_ids = {m.id for m in messages if m}
-
-                # Messages that didn't return = deleted/non-existent
-                skipped_in_batch = batch_count - len(messages)
-                stats["skipped"] += skipped_in_batch
+                stats["skipped"] += batch_count - len(found_ids)
 
                 for msg in messages:
-                    if not msg or not _is_video(msg):
+                    if not msg:
+                        continue
+                    if not _is_video(msg):
                         stats["skipped"] += 1
                         continue
 

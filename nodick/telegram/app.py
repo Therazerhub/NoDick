@@ -61,6 +61,10 @@ from nodick.db import (
     video_count as db_video_count,
     is_user_premium,
     get_user_quota,
+    get_total_deliveries,
+    reserve_video_trial,
+    finish_video_trial,
+    video_trial_status,
     increment_quota,
     refund_quota,
     bump_streak,
@@ -174,7 +178,15 @@ def _welcome_message(user_id: int | None) -> str:
         "video_count": db_video_count(),
         "streak": streak,
     }
-    return (WELCOME_MSG_B if variant == "B" else WELCOME_MSG_A).format(**values)
+    premium = is_user_premium(user_id)
+    trial = video_trial_status(user_id)
+    remaining = trial['remaining'] if not premium else 0
+    text = (WELCOME_MSG_B if variant == "B" else WELCOME_MSG_A).format(**values)
+    if remaining:
+        text += f"\n\n🎲 *{remaining} free previews* — try Surprise Me. After that, unlock 24-hour access."
+    elif not premium:
+        text += "\n\n🔒 Your free previews are complete. Choose *Get Full Access* for 24-hour viewing."
+    return text
 
 
 def _parse_start_payload(payload: str | None) -> tuple[int | None, int | None]:
@@ -816,22 +828,23 @@ async def _notify_referral_activation(context, user_id: int) -> None:
     record_growth_event(
         "referral_activation", user_id, source="referral", payload=str(referrer_id)
     )
-    if result["premium_awarded"]:
+    if result["premium_status"] == "granted":
         text = (
-            f"🎉 *Premium unlocked!*\n\n"
-            f"You reached *{refs} activated referrals* and earned *30 days Premium*. 👑\n"
-            f"Your next Premium reward is at *{refs + 10}*."
+            "🎁 *Referral activated!*\n\n"
+            "You unlocked *24 hours of Premium access*. 👑\n"
+            f"Successful invites: *{refs}*."
         )
-        log_text = f"Referral activated: `{user_id}` → `{referrer_id}`; {refs} total, Premium awarded"
+        log_text = f"Referral activated: `{user_id}` → `{referrer_id}`; {refs} total, 24h Premium granted"
+    elif result["premium_status"] == "active":
+        text = (
+            "🎁 *Referral activated!*\n\n"
+            "Your Premium access is already active. This reward cannot stack; "
+            "invite someone when it expires for another 24 hours."
+        )
+        log_text = f"Referral activated: `{user_id}` → `{referrer_id}`; active Premium unchanged"
     else:
-        next_milestone = ((refs // 10) + 1) * 10
-        needed = next_milestone - refs
-        text = (
-            f"🎁 *Referral activated!*\n\n"
-            f"You earned *+{bonus} bonus watches*.\n"
-            f"Only *{needed} more* for 30 days Premium."
-        )
-        log_text = f"Referral activated: `{user_id}` → `{referrer_id}` (+{bonus})"
+        text = "🎁 *Referral activated!*\n\nYour existing Premium membership is unchanged."
+        log_text = f"Referral activated: `{user_id}` → `{referrer_id}`; paid Premium unchanged"
     await _log_event(context, log_text)
     try:
         await context.bot.send_message(
@@ -963,6 +976,11 @@ async def _enrich_and_send(
         context.bot, chat_id, row["file_id"], caption_text, markup
     )
     log.info("_enrich_and_send: _send_video_ref returned successfully")
+    if delete_mins is not None:
+        try:
+            _schedule_auto_delete(context, chat_id, sent_msg, delete_mins)
+        except Exception:
+            log.exception("Post-send auto-delete scheduling failed")
 
     # Telegram has confirmed delivery. Everything below is best-effort
     # bookkeeping and must never turn a successful send into a quota refund.
@@ -975,11 +993,10 @@ async def _enrich_and_send(
         user_id = update.effective_user.id
         streak = None
         try:
-            first_delivery = record_growth_event(
+            record_growth_event(
                 "first_delivery", user_id, source="bot", video_id=video_id, first_only=True
             )
-            if not first_delivery:
-                record_growth_event("delivery", user_id, source="bot", video_id=video_id)
+            record_growth_event("delivery", user_id, source="bot", video_id=video_id)
             streak = bump_streak(user_id)
             mark_welcome_conversion(user_id)
         except Exception:
@@ -990,9 +1007,7 @@ async def _enrich_and_send(
             log.exception("Post-send referral notification failed for user %s", user_id)
         if streak and streak["new_record"] and streak["streak"] >= 3:
             try:
-                new_record_msg = f"🔥 *{streak['streak']}-day streak!* New personal best.\n"
-                if not is_user_premium(user_id):
-                    new_record_msg += f"⚡ Streak active → *+{streak['bonus']}* bonus watches daily."
+                new_record_msg = f"🔥 *{streak['streak']}-day streak!* New personal best."
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=new_record_msg,
@@ -1005,12 +1020,6 @@ async def _enrich_and_send(
         await _maybe_send_ad(update, context)
     except Exception:
         log.exception("Post-send ad delivery failed")
-
-    if delete_mins is not None:
-        try:
-            _schedule_auto_delete(context, chat_id, sent_msg, delete_mins)
-        except Exception:
-            log.exception("Post-send auto-delete scheduling failed")
 
     if not row.get("file_size"):
         try:
@@ -1047,12 +1056,12 @@ async def _send_quota_exhausted(update: Update, context) -> None:
     from nodick.services import shortener as _shortener
     if _shortener.configured():
         text = (
-            "🚫 *Your free watches are used up.*\n\n"
-            "Unlock *24 hours of unlimited Premium* — free.\n"
-            "Just follow one quick sponsor link and come back."
+            "🔒 *Full access is required.*\n\n"
+            "Your 3 free previews are complete. Unlock *24 hours of unlimited access* "
+            "by following a sponsor link and returning to the bot."
         )
         markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎁 Get 1-Day Premium", callback_data="sponsor_pass")],
+            [InlineKeyboardButton("🎁 Get Full Access", callback_data="sponsor_pass")],
             [
                 InlineKeyboardButton("🎬 Tutorial", callback_data="sponsor_tutorial"),
                 InlineKeyboardButton("👑 Buy Premium", callback_data="get_premium"),
@@ -1061,8 +1070,9 @@ async def _send_quota_exhausted(update: Update, context) -> None:
         ])
     else:
         text = (
-            "🚫 *Your free watches are used up.*\n\n"
-            "🎁 Activate referrals for bonus watches, or unlock Premium."
+            "🔒 *Full access is required.*\n\n"
+            "Sponsor access is not configured yet. You can still buy Premium or "
+            "invite a new user to earn 24 hours of access."
         )
         markup = InlineKeyboardMarkup([
             [
@@ -1093,12 +1103,15 @@ async def _deliver_with_quota(
     *,
     allow_redirect: bool,
 ) -> bool:
-    """Reserve atomically, deliver, and refund any failed reservation."""
+    """Reserve a lifetime trial for non-Premium users; finalize only confirmed sends."""
     user_id = update.effective_user.id
-    charged = not _is_admin(update) and not is_user_premium(user_id)
-    if charged and not increment_quota(user_id):
-        await _send_quota_exhausted(update, context)
-        return False
+    needs_trial = not _is_admin(update) and not is_user_premium(user_id)
+    reservation = None
+    if needs_trial:
+        reservation = reserve_video_trial(user_id)
+        if reservation["status"] != "reserved":
+            await _send_quota_exhausted(update, context)
+            return False
     if getattr(update, "callback_query", None):
         try:
             await update.callback_query.answer("Loading…")
@@ -1108,13 +1121,19 @@ async def _deliver_with_quota(
         delivered = await _enrich_and_send(
             update, context, video_id, allow_redirect=allow_redirect
         )
-        if not delivered and charged:
-            refund_quota(user_id)
-        return bool(delivered)
     except Exception:
-        if charged:
-            refund_quota(user_id)
+        if reservation:
+            try:
+                finish_video_trial(user_id, reservation["token"], delivered=False)
+            except Exception:
+                log.exception("Could not release failed trial reservation for user %s", user_id)
         raise
+    if reservation:
+        try:
+            finish_video_trial(user_id, reservation["token"], delivered=bool(delivered))
+        except Exception:
+            log.exception("Could not finalize trial reservation for user %s", user_id)
+    return bool(delivered)
 
 
 # ── Command: /start ────────────────────────────────────────────────────────
@@ -3027,35 +3046,26 @@ async def my_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q:
         await q.answer()
     user_id = update.effective_user.id
-    quota = get_user_quota(user_id)
     ref_count = get_referral_count(user_id)
-    referral_bonus_total = get_referral_bonus_total(user_id)
     premium = is_user_premium(user_id)
-    
-    status = "👑 Premium" if premium else "🆓 Free"
-    text = (
-        f"📊 *Your Stats*\n\n"
-        f"Status: {status}\n"
-        f"Videos watched: {quota['used']}\n"
-    )
+    trial = video_trial_status(user_id)
+
+    status = "👑 Premium" if premium else "🆓 Trial" if trial['remaining'] else "🔒 Access required"
+    text = f"📊 *Your Stats*\n\nStatus: {status}\n"
+    if not premium and trial['remaining']:
+        text += f"Free previews: *{trial['remaining']} of 3 remaining*\n"
+    text += f"Videos watched: {get_total_deliveries(user_id)}\n"
     text += (
         f"🎁 Referrals: {ref_count}\n"
-        f"⚡ Referral bonus earned: +{referral_bonus_total}\n"
     )
 
     # Streak section — always shown (0 days is a valid starting state)
     streak = get_user_streak(user_id)
-    if not premium:
-        # Daily bonus tier for non-premium users
-        tier_desc = {0: "No bonus", 2: "+2 bonus watches", 3: "+3 bonus watches"}.get(streak["bonus"], f"+{streak['bonus']} bonus watches")
-    else:
-        tier_desc = "Unlimited (Premium)"
     bar7 = streak_bar(streak["streak"], 7)
     text += (
         f"\n🔥 *Watch Streak*\n"
         f"{bar7} *{streak['streak']}* days"
         f"  |  Best: *{streak['best']}*\n"
-        f"{tier_desc}\n"
     )
 
     from nodick.telegram.keyboards import account_keyboard
@@ -3074,24 +3084,12 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
     ref_count = get_referral_count(user_id)
-    bonus_total = get_referral_bonus_total(user_id)
     social = get_referral_social_proof(user_id)
     bot_username = (await context.bot.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-    try:
-        bonus = max(1, int(get_bot_setting("referral_bonus", "10") or "10"))
-    except (TypeError, ValueError):
-        bonus = 10
-
-    milestone = 10
-    tier_progress = ref_count % milestone
-    next_milestone = ((ref_count // milestone) + 1) * milestone
-    needed = next_milestone - ref_count
-    filled = 10 if tier_progress == 0 and ref_count else tier_progress
-    progress_bar = f"[{'▮' * filled}{'▯' * (milestone - filled)}]"
     share_text = (
-        "I found an adult content bot with instant streaming, no ads, and premium videos. "
-        f"Join through my link and we both get perks: {ref_link}"
+        "I found an adult content bot with instant streaming. "
+        f"Join through my link: {ref_link}"
     )
     activity_lines = []
     if social["yours_today"]:
@@ -3114,16 +3112,12 @@ async def refer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🎁 *Invite & Earn*\n\n"
         f"{social_proof}"
-        f"Invite friends to this adult content bot. Each *new* user who joins and watches "
-        f"their first video gives you *+{bonus} bonus watches*.\n\n"
-        f"👑 *Premium milestone*\n"
-        f"{progress_bar} *{tier_progress}/{milestone}* toward your next month of Premium\n"
-        f"Only *{needed} more* referral{'s' if needed != 1 else ''} until *{next_milestone} total*.\n\n"
-        f"👥 Successful invites: *{ref_count}*\n"
-        f"⚡ Bonus watches earned: *+{bonus_total}*\n\n"
+        "Invite friends to this adult content bot. When a *new* user joins and "
+        "watches their first video, you receive *24 hours of Premium access*.\n\n"
+        f"👥 Successful invites: *{ref_count}*\n\n"
         f"🔗 *Your personal link*\n`{ref_link}`\n\n"
         "Tap *📤 Share Invite* to send a ready-made Telegram invite. "
-        "Only first-time users count — no loopholes, sadly."
+        "Only first-time users count. Rewards do not replace an existing paid membership."
     )
     markup = referral_keyboard(ref_link, share_text)
     refer_gif = get_bot_setting("refer_gif", "")
@@ -3249,6 +3243,15 @@ def build_application() -> Application:
 
     # Named, serialized scheduler with admin-visible next-check status.
     autopost.setup_jobs(app)
+    if app.job_queue:
+        from nodick.services.automatic_import import automatic_import_job
+        app.job_queue.run_repeating(
+            automatic_import_job, interval=60, first=10,
+            name="automatic-channel-import",
+            job_kwargs={"max_instances": 1, "coalesce": True, "misfire_grace_time": 60},
+        )
+    else:
+        log.warning("JobQueue unavailable: automatic channel import cannot run")
 
     # ── Commands ──
     app.add_handler(CommandHandler("start", start))

@@ -2,8 +2,10 @@
 import json
 from urllib.parse import urlsplit
 
+from pathlib import Path
+
 DEFAULT_WELCOME_MEDIA = json.dumps({
-    "type": "photo", "media": "https://files.catbox.moe/j9r0xf.jpg"
+    "type": "photo", "media": str(Path(__file__).resolve().parents[2] / "assets" / "welcome-noir.jpg")
 })
 MEDIA_TYPES = {"photo", "video", "animation"}
 

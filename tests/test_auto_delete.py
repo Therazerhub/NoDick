@@ -79,6 +79,18 @@ def test_schedule_refuses_missing_message_id_or_job_queue():
     assert app._schedule_auto_delete(SimpleNamespace(job_queue=None), 1, 99, 30) is False
 
 
+def test_schedule_failure_does_not_claim_success():
+    class BrokenJobQueue:
+        def run_once(self, callback, **kwargs):
+            raise RuntimeError("scheduler stopped")
+
+    with pytest.raises(RuntimeError, match="scheduler stopped"):
+        app._schedule_auto_delete(
+            SimpleNamespace(job_queue=BrokenJobQueue()), 456,
+            SimpleNamespace(message_id=900), 30,
+        )
+
+
 def test_auto_delete_job_calls_telegram_delete_message():
     deleted = []
 
@@ -92,6 +104,24 @@ def test_auto_delete_job_calls_telegram_delete_message():
     )
     asyncio.run(app._auto_delete_message(context))
     assert deleted == [{"chat_id": -1009, "message_id": 777}]
+
+
+def test_auto_delete_job_rejects_missing_payload(caplog):
+    context = SimpleNamespace(bot=object(), job=SimpleNamespace(data=None))
+    asyncio.run(app._auto_delete_message(context))
+    assert "scheduled job data is missing" in caplog.text
+
+
+def test_auto_delete_job_logs_telegram_failure(caplog):
+    class FakeBot:
+        async def delete_message(self, **kwargs):
+            raise RuntimeError("Telegram refused deletion")
+
+    context = SimpleNamespace(
+        bot=FakeBot(), job=SimpleNamespace(data={"chat_id": 456, "message_id": 900})
+    )
+    asyncio.run(app._auto_delete_message(context))
+    assert "Telegram refused deletion" in caplog.text
 
 
 def test_send_video_ref_returns_send_video_message_for_scheduler():
@@ -143,6 +173,7 @@ def test_enrich_send_respects_premium_and_30_minute_timer(monkeypatch, premium):
     }
     sent_captions = []
     scheduled = []
+    scheduled_before_ad = []
 
     monkeypatch.setattr(app, "get_video", lambda _video_id: row)
     monkeypatch.setattr(app, "find_sibling_parts", lambda *_args: [])
@@ -174,6 +205,8 @@ def test_enrich_send_respects_premium_and_30_minute_timer(monkeypatch, premium):
         return SimpleNamespace(message_id=900)
 
     async def no_ad(_update, _context):
+        # Countdown must start when the video is delivered, not after ads.
+        scheduled_before_ad.append(bool(scheduled))
         return None
 
     monkeypatch.setattr(app, "_send_video_ref", fake_send)
@@ -198,6 +231,7 @@ def test_enrich_send_respects_premium_and_30_minute_timer(monkeypatch, premium):
     asyncio.run(app._enrich_and_send(update, context, 42))
 
     assert len(sent_captions) == 1
+    assert scheduled_before_ad == [not premium]
     if premium:
         assert "Save it before it disappears" not in sent_captions[0]
         assert scheduled == []

@@ -37,8 +37,8 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
     else:
         rows.append([InlineKeyboardButton("👤 My Account", callback_data="my_account")])
     
-    if sponsor_available():
-        rows.append([InlineKeyboardButton("🎁 Get 1-Day Premium", callback_data="sponsor_pass")])
+    if user_id is not None and not is_user_premium(user_id) and sponsor_available():
+        rows.append([InlineKeyboardButton("🎁 Get Full Access", callback_data="sponsor_pass")])
 
     extra = get_bot_setting("extra_admins", "")
     is_extra = False

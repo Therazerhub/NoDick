@@ -85,6 +85,7 @@ for referred in range(10, 19):
     db._execute("INSERT INTO referrals (referrer_id, referred_id, bonus_granted) VALUES (?, ?, ?)", (1, referred, 10))
 db.ensure_user_exists(99)
 assert db.set_pending_referral(1, 99)
+db.record_growth_event('first_delivery', 99, video_id=1, first_only=True)
 first = db.activate_pending_referral(99, 10)
 second = db.activate_pending_referral(99, 10)
 row = db._fetchone("SELECT quota_limit, is_premium, premium_until, pending_referrer_id, referred_by FROM user_settings WHERE user_id=?", (1,))
@@ -103,7 +104,7 @@ print(json.dumps({
     )
     assert result == {
         "count": 10,
-        "premium": True,
+        "premium": False,  # Existing lifetime premium is not re-awarded.
         "second": None,
         "quota_limit": 15,
         "is_premium": 1,
@@ -254,12 +255,12 @@ def test_random_video_parameterizes_gif_pattern_for_postgres_compatibility():
     assert "NOT LIKE '%.gif'" not in random_fn
 
 
-def test_failed_delivery_refunds_reserved_quota(monkeypatch):
-    refunds = []
+def test_failed_delivery_releases_trial_reservation(monkeypatch):
+    finalized = []
     monkeypatch.setattr(app, "_is_admin", lambda _update: False)
     monkeypatch.setattr(app, "is_user_premium", lambda _uid: False)
-    monkeypatch.setattr(app, "increment_quota", lambda _uid: True)
-    monkeypatch.setattr(app, "refund_quota", refunds.append)
+    monkeypatch.setattr(app, "reserve_video_trial", lambda _uid: {"status": "reserved", "token": "test-token"})
+    monkeypatch.setattr(app, "finish_video_trial", lambda uid, token, delivered: finalized.append((uid, token, delivered)))
 
     async def missing(*_args, **_kwargs):
         return False
@@ -270,7 +271,7 @@ def test_failed_delivery_refunds_reserved_quota(monkeypatch):
         app._deliver_with_quota(update, object(), 42, allow_redirect=False)
     )
     assert delivered is False
-    assert refunds == [7]
+    assert finalized == [(7, "test-token", False)]
 
 
 def test_regular_user_cannot_index_video(monkeypatch):
@@ -342,6 +343,8 @@ def test_callback_backed_commands_render_without_callback_query(monkeypatch):
         lambda _uid: {"used": 1, "limit": 5, "remaining": 4, "is_premium": False},
     )
     monkeypatch.setattr(app, "get_referral_count", lambda _uid: 2)
+    monkeypatch.setattr(app, "video_trial_status", lambda _uid: {"remaining": 2})
+    monkeypatch.setattr(app, "get_total_deliveries", lambda _uid: 1)
     monkeypatch.setattr(app, "get_referral_bonus_total", lambda _uid: 20)
     monkeypatch.setattr(app, "is_user_premium", lambda _uid: False)
     monkeypatch.setattr(

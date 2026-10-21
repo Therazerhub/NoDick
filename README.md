@@ -57,7 +57,7 @@ StashDB/FansDB enrichment, fuzzy title matching, phonetic performer matching and
 
 ### 📈 Growth built in
 
-Autopost teasers, referrals, streaks, Premium milestones, viral video links and welcome A/B tests.
+Autopost teasers, 24-hour referral rewards, three free previews for new users, viral video links and welcome A/B tests.
 
 </td>
 </tr>
@@ -83,7 +83,7 @@ Telegram UI ◄── search / random / cast / similar / categories
 
 ### Discovery
 
-- **🎲 Surprise Me** — one-tap random playback with quota visibility.
+- **🎲 Surprise Me** — one-tap random playback; three free previews for new users.
 - **🔍 Search** — clean title search across the indexed library.
 - **📁 Categories** — browse organized studios and content groups.
 - **🎭 Performer discovery** — search performers and open cached filmographies.
@@ -104,9 +104,8 @@ Telegram UI ◄── search / random / cast / similar / categories
 
 - **🚀 Multi-channel autoposter** with cooldowns and repeat avoidance.
 - **🫥 SFW teaser generation** using heavily blurred source artwork or thumbnails.
-- **🎁 Invite & Earn** credits only activated referrals after their first successful delivery.
-- **👑 Premium milestones** — every ten activated referrals grants 30 days.
-- **🔥 Watch streaks** with escalating daily quota bonuses.
+- **🎁 Invite & Earn** — one activated referral grants the inviter a non-stacking 24-hour Premium pass after the new user's first delivery.
+- **🔥 Watch streaks** with a personal-best indicator; legacy daily quota bonuses are no longer part of access.
 - **📤 Viral video sharing** — shared links open the exact video and attribute new users.
 - **🧪 Welcome A/B tests** measuring real exposure-to-first-watch conversion.
 - **📊 Referral social proof** with daily activity and anonymized leaderboard pressure.
@@ -122,7 +121,7 @@ Telegram UI ◄── search / random / cast / similar / categories
 - Fail-closed force-join validation, correct restricted-member handling and a redacted live health check for admins.
 - Restart, uptime, new-user, referral and Premium event logging.
 - Flood-control retries for Telegram channel copies.
-- Atomic quota reservations with automatic refunds when delivery fails.
+- Three lifetime trial deliveries are reserved atomically and only counted after Telegram confirms a send; paid and active Premium bypass the gate.
 - Indexed browse/referral paths and non-blocking poster image processing.
 - Resumable channel scans with persisted progress and bounded network retries.
 
@@ -140,7 +139,7 @@ Telegram UI ◄── search / random / cast / similar / categories
 | `/categories` | Browse by category |
 | `/favorites` | Open saved videos |
 | `/performer <name>` | Find a performer |
-| `/mystats` | View quota, referrals and streak |
+| `/mystats` | View access status, trial previews, referrals and streak |
 | `/refer` | Open the referral dashboard |
 | `/premium` | View Premium access |
 
@@ -166,13 +165,15 @@ Render Free currently provides 512 MB RAM shared by the bot and inference proces
 
 Most recurring configuration lives in the inline **⚙️ Settings** dashboard. Slash-command archaeology is kept to a minimum because this is software, not a ritual.
 
-**Welcome banner:** Open **Settings → Welcome Media**, then send a photo, GIF, MP4, or a direct `.jpg`/`.png`/`.webp`/`.gif`/`.mp4` URL. Uploads (including forwarded media) are captured before library import handlers. The bot previews the media through Telegram before saving it; invalid input retains the previous banner. Send `clear` to disable the banner or `/cancel` to leave it unchanged. The typed `welcome_media` bot setting persists across restarts and supersedes the old `welcome_gif` setting. Until overridden, the banner uses `https://files.catbox.moe/j9r0xf.jpg`. `/start`, the main-menu return, and successful force-join verification share the same renderer, with a text-menu fallback if the media cannot load. GIF website pages are not direct media URLs; download the file and upload it to the bot instead.
+**Welcome banner:** Open **Settings → Welcome Media**, then send a photo, GIF, MP4, or a direct `.jpg`/`.png`/`.webp`/`.gif`/`.mp4` URL. Uploads (including forwarded media) are captured before library import handlers. The bot previews the media through Telegram before saving it; invalid input retains the previous banner. Send `clear` to disable the banner or `/cancel` to leave it unchanged. The typed `welcome_media` bot setting persists across restarts and supersedes the old `welcome_gif` setting. Until overridden, the banner uses the bundled `assets/welcome-noir.jpg` (new deployments only; an existing saved banner remains selected). `/start`, the main-menu return, and successful force-join verification share the same renderer, with a text-menu fallback if the media cannot load. GIF website pages are not direct media URLs; download the file and upload it to the bot instead.
+
+**Automatic channel import:** The channel selected through the bot's import settings is polled every 60 seconds while the service is awake, using a persistent per-channel high-water cursor separate from manual imports. Initial selection indexes the latest available message, then subsequent ticks consume at most 300 new message IDs. Requires working Telegram API credentials and channel-history access. An outage retries without advancing the cursor; Render Free sleep pauses the scheduler. A durable database is required to retain progress across redeploys.
 
 ---
 
 ## Sponsored 1-Day Premium passes
 
-Optional user flow: **Get 1-Day Premium → Open Sponsor Link → provider destination → return to this bot → 24-hour Premium pass**. The return credential expires after **30 minutes**, is bound to the requesting Telegram account, stored as a SHA-256 hash, and can redeem only once. Only a successfully generated and persisted short link can activate its token. Pending valid links are reused instead of repeatedly calling the provider. A sponsored pass does not overwrite or shorten paid/lifetime Premium; it does not stack while an existing pass remains active. Premium access now suppresses sponsored chat ads and auto-delete warnings/timers for newly delivered videos, for paid and sponsored users alike. Keep a persistent PostgreSQL database on Render—ephemeral SQLite cannot preserve redemption state across deployments.
+Optional user flow: **Get Full Access → Open Sponsor Link → provider destination → return to this bot → 24-hour Premium pass**. The return credential expires after **30 minutes**, is bound to the requesting Telegram account, stored as a SHA-256 hash, and can redeem only once. Only a successfully generated and persisted short link can activate its token. Pending valid links are reused instead of repeatedly calling the provider. A sponsored pass does not overwrite or shorten paid/lifetime Premium; it does not stack while an existing pass remains active. Premium access now suppresses sponsored chat ads and auto-delete warnings/timers for newly delivered videos, for paid and sponsored users alike. Keep a persistent PostgreSQL database on Render—ephemeral SQLite cannot preserve redemption state across deployments.
 
 Set these in the Render service's **Environment**, then redeploy:
 
@@ -318,7 +319,7 @@ LOGS_CHANNEL_ID=0
 
 ### Silent bot-token scan
 
-Forward the latest source-channel video to the bot once, then use the **🛰 Import** button. The stored channel and resume position make future scans one tap.
+Forward the latest source-channel video to the bot once, then use the **🛰 Import** button for a manual history scan. Automatic new-video polling uses the admin-selected `scan_channel_id` (and `IMPORT_CHANNEL_ID` as the initial default) when wired into the running bot's JobQueue. It stores a separate per-channel high-water cursor in persistent `bot_settings`, imports at most 300 message IDs per check, resumes backlog on later checks, and retries failures without advancing past an incomplete batch. On first selection it starts with the latest message, not the full channel history; use manual import for older videos. The bot needs `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` and history access to that channel. Polling runs only while the service is awake—Render Free sleep can delay imports—and persistent PostgreSQL (not ephemeral SQLite) is needed to retain the cursor over redeploys.
 
 Power-user equivalent:
 
