@@ -78,3 +78,39 @@ def test_stats_command_and_button_render(monkeypatch, callback):
     assert "NoDick Stats" in text
     assert "Videos: 12" in text
     assert "D1: 0/0" in text
+
+
+@pytest.mark.parametrize("callback", [False, True])
+def test_stats_still_responds_when_growth_query_fails(monkeypatch, callback):
+    query = SimpleNamespace(answer=AsyncMock(), message=SimpleNamespace(message_id=10)) if callback else None
+    message = SimpleNamespace(reply_text=AsyncMock())
+    update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=101), message=message)
+    replace = AsyncMock()
+    monkeypatch.setattr(app, "_is_admin", lambda _: True)
+    monkeypatch.setattr(app, "_check_force_join", AsyncMock(return_value=False))
+    monkeypatch.setattr(app, "_replace_with_text", replace)
+    for name, value in [("db_video_count", 12), ("total_views", 50), ("category_count", 3), ("get_user_count", 2)]:
+        monkeypatch.setattr(app, name, lambda value=value: value)
+    monkeypatch.setattr(app, "get_welcome_experiment_stats", lambda: {v: dict(converted=0, exposed=0) for v in ("A", "B")})
+    def broken(_days):
+        raise RuntimeError("private db detail must not appear in UI")
+    monkeypatch.setattr(app, "get_growth_metrics", broken)
+    monkeypatch.setattr(app, "main_menu", lambda _: None)
+    asyncio.run(app.stats(update, SimpleNamespace()))
+    text = replace.await_args.args[2] if callback else message.reply_text.await_args.args[0]
+    assert "Videos: 12" in text
+    assert "Growth analytics temporarily unavailable" in text
+    assert "private db detail" not in text
+
+
+def test_stats_edit_failure_sends_visible_notice(monkeypatch):
+    query = SimpleNamespace(answer=AsyncMock(), message=SimpleNamespace(message_id=10))
+    update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=101),
+                             effective_chat=SimpleNamespace(id=101))
+    bot = SimpleNamespace(send_message=AsyncMock())
+    monkeypatch.setattr(app, "_is_admin", lambda _: True)
+    monkeypatch.setattr(app, "_check_force_join", AsyncMock(return_value=False))
+    monkeypatch.setattr(app, "db_video_count", lambda: (_ for _ in ()).throw(RuntimeError("private detail")))
+    asyncio.run(app.stats(update, SimpleNamespace(bot=bot)))
+    bot.send_message.assert_awaited_once()
+    assert "private detail" not in bot.send_message.await_args.kwargs["text"]

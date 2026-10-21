@@ -1327,8 +1327,18 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         views = total_views()
         cats = category_count()
         users = get_user_count()
-        experiment = get_welcome_experiment_stats()
-        growth = get_growth_metrics(30)
+        # Analytics are supplemental. A failed retention query must not make
+        # the main Stats button appear inert.
+        try:
+            experiment = get_welcome_experiment_stats()
+            growth = get_growth_metrics(30)
+            analytics_ready = True
+        except Exception:
+            log.exception("Stats analytics unavailable")
+            experiment = {v: {"converted": 0, "exposed": 0} for v in ("A", "B")}
+            growth = {"retention": {k: 0 for k in ("d1", "d1_eligible", "d7", "d7_eligible")},
+                      "funnel": {}, "sources": [], "dau": 0, "wau": 0}
+            analytics_ready = False
         a = experiment["A"]
         b = experiment["B"]
         a_rate = (a["converted"] / a["exposed"] * 100) if a["exposed"] else 0.0
@@ -1360,22 +1370,36 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"A: {a['converted']}/{a['exposed']} ({a_rate:.1f}%)\n"
             f"B: {b['converted']}/{b['exposed']} ({b_rate:.1f}%)"
         )
+        if not analytics_ready:
+            text = (f"📊 *NoDick Stats*\n\n"
+                    f"👥 Users: {users:,}\n📹 Videos: {total:,}\n"
+                    f"👁 Views: {views:,}\n📁 Categories: {cats:,}\n\n"
+                    "⚠️ Growth analytics temporarily unavailable.")
         if update.callback_query:
-            log.info("Stats: editing message %s for user %s",
-                     update.callback_query.message.message_id, update.effective_user.id)
             await _replace_with_text(update, context, text, back())
-            log.info("Stats: edit successful")
         else:
             await update.message.reply_text(
                 text, reply_markup=main_menu(update.effective_user.id)
             )
-    except Exception as e:
-        log.error("Stats handler error: %s | %s", e, repr(e), exc_info=True)
+    except Exception:
+        log.exception("Stats handler failed")
         if update and update.callback_query:
             try:
-                await update.callback_query.answer(f"⚠️ {str(e)[:50]}", show_alert=True)
+                await update.callback_query.answer("Stats are temporarily unavailable.", show_alert=True)
             except Exception:
                 pass
+            try:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="Stats are temporarily unavailable. Please try again shortly.",
+                )
+            except Exception:
+                log.exception("Could not report Stats failure to admin")
+        elif update and update.message:
+            try:
+                await update.message.reply_text("Stats are temporarily unavailable. Please try again shortly.")
+            except Exception:
+                log.exception("Could not report Stats failure to admin")
 
 
 # ── Command: /categories ──────────────────────────────────────────────────
