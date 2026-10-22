@@ -13,7 +13,8 @@ from typing import Optional
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from nodick.config import settings
-from nodick.db import _fetchone, _using_pg, get_bot_setting, get_video, set_bot_setting
+from nodick.db import _fetchone, _using_pg, get_all_user_ids, get_bot_setting, get_video, set_bot_setting
+from nodick.services.broadcast import broadcast_message
 from nodick.metadata.stash import query_api
 
 try:
@@ -442,7 +443,7 @@ def build_auto_post_caption(video: dict, bot_username: str) -> str:
 # ── Main poster ──────────────────────────────────────────────────────────────
 
 async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = False) -> int:
-    """Post one blurred teaser to all configured channels.
+    """Post one blurred teaser to channels, then broadcast it to bot users.
 
     If ``channel_id`` is passed, post only to that channel (manual trigger).
     ``force=True`` bypasses the cooldown (manual \"Post Now\").
@@ -514,9 +515,10 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
     ])
 
     successes = 0
+    broadcast_source = None
     for ch in channels:
         try:
-            await bot.send_photo(
+            message = await bot.send_photo(
                 chat_id=ch["id"],
                 photo=blurred,
                 caption=caption,
@@ -524,6 +526,8 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
                 reply_markup=markup,
             )
             successes += 1
+            if broadcast_source is None:
+                broadcast_source = message
             log.info("Posted autopost to %s (%s)", ch["id"], ch.get("name", ""))
         except Exception as e:
             log.error("Failed to post to channel %s: %s", ch["id"], e)
@@ -537,4 +541,15 @@ async def send_auto_post(bot: Bot, channel_id: str | None = None, force: bool = 
     failed = len(channels) - successes
     status = "sent" if not failed else ("partial" if successes else "failed")
     record_post_result(status, status, successes=successes, failed=failed, video_id=vid_id)
+    if broadcast_source is not None:
+        try:
+            sent, failed, retried = await broadcast_message(
+                bot, broadcast_source, get_all_user_ids(), reply_markup=markup,
+            )
+            log.info('Autopost broadcast for video %s: sent=%s failed=%s retried=%s',
+                     vid_id, sent, failed, retried)
+        except Exception:
+            # The channel post is already published and marked. Never undo its
+            # cooldown/history or republish it because private delivery failed.
+            log.exception('Could not complete autopost broadcast for video %s', vid_id)
     return successes

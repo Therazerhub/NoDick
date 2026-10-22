@@ -17,7 +17,7 @@ from telegram import (
     User,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TimedOut
+from telegram.error import BadRequest, RetryAfter
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -2171,45 +2171,19 @@ async def _broadcast_worker(context, source_message, user_ids: list[int], admin_
         return
     async with lock:
         started = asyncio.get_running_loop().time()
-        sent = failed = retried = 0
         status = await context.bot.send_message(
             admin_chat_id, f"📡 Broadcasting to {len(user_ids)} users…"
         )
-        for index, uid in enumerate(user_ids, 1):
-            delivered = False
-            for attempt in range(3):
-                try:
-                    await context.bot.copy_message(
-                        chat_id=uid,
-                        from_chat_id=source_message.chat_id,
-                        message_id=source_message.message_id,
-                    )
-                    sent += 1
-                    delivered = True
-                    break
-                except RetryAfter as exc:
-                    retried += 1
-                    retry_after = exc.retry_after
-                    delay = retry_after.total_seconds() if hasattr(retry_after, "total_seconds") else float(retry_after or 1)
-                    await asyncio.sleep(min(delay, 30) + 0.25)
-                except (TimedOut, NetworkError):
-                    retried += 1
-                    if attempt < 2:
-                        await asyncio.sleep(1.5 * (attempt + 1))
-                except (Forbidden, BadRequest) as exc:
-                    log.debug("Broadcast rejected for user %s: %s", uid, type(exc).__name__)
-                    break
-                except Exception:
-                    log.exception("Broadcast failed for user %s", uid)
-                    break
-            if not delivered:
-                failed += 1
-            await asyncio.sleep(0.05)
-            if index % 25 == 0:
-                try:
-                    await status.edit_text(f"📡 Broadcasting… {index}/{len(user_ids)}")
-                except Exception:
-                    pass
+        from nodick.services.broadcast import broadcast_message
+
+        async def progress(index, total):
+            await status.edit_text(f"📡 Broadcasting… {index}/{total}")
+
+        sent, failed, retried = await broadcast_message(
+            context.bot, source_message, user_ids,
+            reply_markup=getattr(source_message, 'reply_markup', None),
+            progress=progress,
+        )
         elapsed = int(asyncio.get_running_loop().time() - started)
         summary = (
             f"📡 Broadcast complete!\n✅ Sent: {sent}\n❌ Failed: {failed}"
